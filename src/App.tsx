@@ -342,17 +342,22 @@ export default function App() {
     fetchData();
     const interval = setInterval(fetchData, 2000); // Polling for fallback
 
-    // Periodic Balance History Capture (Every 60s)
+    // High-Frequency Balance History Capture (Every 5s for real-time feel)
     const historyInterval = setInterval(() => {
       const currentEquity = calculateTotalEquity();
       setPortfolio((prev: any) => {
         const newHistory = [...(prev.balanceHistory || [])];
+        const lastPoint = newHistory[newHistory.length - 1];
+        
+        // Only add if balance changed or every minute (to keep some spread)
+        // But for "all things real time", let's just add it every 5s and keep 200 points
         newHistory.push({ time: new Date().toISOString(), balance: currentEquity });
-        // Keep last 100 points to prevent bloat
-        if (newHistory.length > 100) newHistory.shift();
+        
+        // Keep last 200 points for a detailed view without slowing down the browser
+        if (newHistory.length > 200) newHistory.shift();
         return { ...prev, balanceHistory: newHistory };
       });
-    }, 60000);
+    }, 5000);
 
     // WebSocket Setup for real-time market data
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -533,22 +538,43 @@ export default function App() {
                 </h3>
                 <div className="h-[300px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={portfolio.balanceHistory}>
+                    <AreaChart data={[...(portfolio.balanceHistory || []), { time: new Date().toISOString(), balance: calculateTotalEquity() }]}>
                       <defs>
                         <linearGradient id="colorBalance" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
+                          <stop offset="5%" stopColor="#10b981" stopOpacity={0.4}/>
                           <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
                         </linearGradient>
                       </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" vertical={false} />
-                      <XAxis dataKey="time" tickFormatter={(time) => new Date(time).toLocaleTimeString()} stroke="#ffffff50" fontSize={10} />
-                      <YAxis domain={['auto', 'auto']} stroke="#ffffff50" fontSize={10} tickFormatter={(val) => `$${val.toLocaleString()}`} />
-                      <Tooltip 
-                        contentStyle={{ backgroundColor: '#111112', borderColor: '#ffffff10', borderRadius: '8px' }}
-                        itemStyle={{ color: '#10b981' }}
-                        labelFormatter={(label) => new Date(label).toLocaleTimeString()}
+                      <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
+                      <XAxis 
+                        dataKey="time" 
+                        tickFormatter={(time) => new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} 
+                        stroke="#ffffff30" 
+                        fontSize={10} 
+                        minTickGap={30}
                       />
-                      <Area type="monotone" dataKey="balance" stroke="#10b981" strokeWidth={2} fillOpacity={1} fill="url(#colorBalance)" />
+                      <YAxis 
+                        domain={['auto', 'auto']} 
+                        stroke="#ffffff30" 
+                        fontSize={10} 
+                        tickFormatter={(val) => `$${val.toLocaleString()}`} 
+                        width={60}
+                      />
+                      <Tooltip 
+                        contentStyle={{ backgroundColor: '#111112', borderColor: '#ffffff10', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.1)' }}
+                        itemStyle={{ color: '#10b981', fontWeight: 'bold' }}
+                        labelFormatter={(label) => new Date(label).toLocaleTimeString()}
+                        cursor={{ stroke: '#10b981', strokeWidth: 1 }}
+                      />
+                      <Area 
+                        type="monotone" 
+                        dataKey="balance" 
+                        stroke="#10b981" 
+                        strokeWidth={3} 
+                        fillOpacity={1} 
+                        fill="url(#colorBalance)" 
+                        animationDuration={300}
+                      />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
