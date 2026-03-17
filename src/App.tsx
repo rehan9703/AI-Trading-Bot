@@ -333,6 +333,18 @@ export default function App() {
     fetchData();
     const interval = setInterval(fetchData, 2000); // Polling for fallback
 
+    // Periodic Balance History Capture (Every 60s)
+    const historyInterval = setInterval(() => {
+      const currentEquity = calculateTotalEquity();
+      setPortfolio((prev: any) => {
+        const newHistory = [...(prev.balanceHistory || [])];
+        newHistory.push({ time: new Date().toISOString(), balance: currentEquity });
+        // Keep last 100 points to prevent bloat
+        if (newHistory.length > 100) newHistory.shift();
+        return { ...prev, balanceHistory: newHistory };
+      });
+    }, 60000);
+
     // WebSocket Setup for real-time market data
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}`;
@@ -366,6 +378,7 @@ export default function App() {
     return () => {
       ws.close();
       clearInterval(interval);
+      clearInterval(historyInterval);
     };
   }, [symbol]);
 
@@ -478,12 +491,14 @@ export default function App() {
               <p className="text-2xl font-mono font-medium text-white">${portfolio.balance.USDT.toLocaleString()}</p>
             </div>
             <div>
-              <p className="text-[10px] uppercase tracking-widest text-white/30 mb-1">Margin Used</p>
-              <p className="text-2xl font-mono font-medium text-amber-500">${portfolio.positions.filter((p: any) => p.status === 'OPEN').reduce((acc: number, p: any) => acc + p.margin, 0).toLocaleString()}</p>
+              <p className="text-[10px] uppercase tracking-widest text-white/30 mb-1">Total Equity</p>
+              <p className="text-2xl font-mono font-medium text-white">${calculateTotalEquity().toLocaleString()}</p>
             </div>
             <div>
-              <p className="text-[10px] uppercase tracking-widest text-white/30 mb-1">Total Equity</p>
-              <p className="text-2xl font-mono font-medium text-emerald-500">${calculateTotalEquity().toLocaleString()}</p>
+              <p className="text-[10px] uppercase tracking-widest text-white/30 mb-1">Global Net PnL</p>
+              <p className={cn("text-2xl font-mono font-black", (calculateTotalEquity() - 100000) >= 0 ? "text-emerald-500" : "text-rose-500")}>
+                {(calculateTotalEquity() - 100000) >= 0 ? '+' : ''}${(calculateTotalEquity() - 100000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </p>
             </div>
             <div className="hidden xl:block w-px h-12 bg-white/10 mx-2" />
             <div>
@@ -570,22 +585,31 @@ export default function App() {
               <div className="space-y-4">
                 {Array.from(new Set(portfolio.positions.map(p => p.strategy))).map(strategy => {
                   const strategyPositions = portfolio.positions.filter(p => p.strategy === strategy);
-                  const totalPnL = strategyPositions.reduce((sum, p) => sum + (p.pnl || 0), 0);
-                  const winCount = strategyPositions.filter(p => p.pnl > 0).length;
-                  const closedCount = strategyPositions.filter(p => p.status === 'CLOSED').length;
+                  const currentPrice = data?.price ? parseFloat(data.price) : 0;
+                  
+                  const totalPnL = strategyPositions.reduce((sum, p) => {
+                    const unrealized = p.status === 'OPEN' 
+                      ? (p.side === 'LONG' ? (currentPrice - p.entryPrice) * p.qty : (p.entryPrice - currentPrice) * p.qty)
+                      : 0;
+                    return sum + (p.pnl || 0) + unrealized;
+                  }, 0);
+
+                  const winCount = strategyPositions.filter(p => (p.pnl || 0) > 0).length;
+                  const totalTrades = strategyPositions.length;
                   
                   return (
-                    <div key={strategy} className="flex items-center justify-between p-4 bg-white/5 rounded-xl border border-white/5">
+                    <div key={strategy} className="flex items-center justify-between p-4 bg-white/5 rounded-xl border border-white/5 hover:bg-white/10 transition-colors">
                       <div>
                         <p className="font-bold text-sm text-white/90">{strategy}</p>
                         <p className="text-[10px] text-white/40 uppercase tracking-widest mt-1">
-                          {closedCount} Trades • {closedCount > 0 ? ((winCount / closedCount) * 100).toFixed(1) : 0}% Win Rate
+                          {totalTrades} Trades • {totalTrades > 0 ? ((winCount / totalTrades) * 100).toFixed(1) : 0}% Win Rate
                         </p>
                       </div>
                       <div className="text-right">
                         <p className={cn("font-mono font-bold", totalPnL >= 0 ? "text-emerald-500" : "text-rose-500")}>
-                          {totalPnL >= 0 ? '+' : ''}${totalPnL.toFixed(2)}
+                          {totalPnL >= 0 ? '+' : ''}${totalPnL.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </p>
+                        <p className="text-[8px] text-white/20 uppercase">Real-Time Aggregated</p>
                       </div>
                     </div>
                   );
