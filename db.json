@@ -1,80 +1,134 @@
 {
   "paperBalance": {
-    "USDT": 6252.936660368647,
+    "USDT": 8717.29397559474,
     "BTC": 0
   },
   "positions": [
     {
+      "id": "pg00he",
+      "symbol": "ETH/USDT",
+      "side": "LONG",
+      "status": "CLOSED",
+      "entryTime": "2026-03-17T20:08:46.582Z",
+      "exitTime": "2026-03-17T20:08:48.575Z",
+      "exitPrice": 2318.661843,
+      "liquidationPrice": 1587.0836372411623,
+      "exitFee": 1.7842226996867747,
+      "pnl": -175.64240208076941,
+      "entryPrice": 2362.903678274683,
+      "qty": 3.847526764356157,
+      "leverage": 3,
+      "margin": 3030.445047919151,
+      "entryFee": 3.636534057502981,
+      "strategy": "AMQS: High Probability Long (MARKET Order) -> Closed via Stop Loss (LIMIT Order)"
+    },
+    {
+      "id": "6biwyd",
+      "symbol": "BTC/USDT",
+      "side": "SHORT",
+      "status": "CLOSED",
+      "entryTime": "2026-03-17T20:08:02.638Z",
+      "exitTime": "2026-03-17T20:08:13.324Z",
+      "exitPrice": 74447.464509,
+      "liquidationPrice": 96966.17494165545,
+      "exitFee": 1.8931264844477054,
+      "pnl": -189.8503386888771,
+      "entryPrice": 72998.37511291502,
+      "qty": 0.1271451282413281,
+      "leverage": 3,
+      "margin": 3093.795921713384,
+      "entryFee": 3.7125551060560613,
+      "strategy": "AMQS: High Probability Short (MARKET Order) -> Closed via Stop Loss (LIMIT Order)"
+    },
+    {
+      "id": "iadimy",
+      "symbol": "ETH/USDT",
+      "side": "LONG",
+      "status": "CLOSED",
+      "entryTime": "2026-03-17T20:07:37.229Z",
+      "exitTime": "2026-03-17T20:07:49.265Z",
+      "exitPrice": 2319.171894,
+      "liquidationPrice": 1588.6160953821352,
+      "exitFee": 1.857389658330617,
+      "pnl": -189.90288743943532,
+      "entryPrice": 2365.1852536706724,
+      "qty": 4.004424301484349,
+      "leverage": 3,
+      "margin": 3157.0684357704213,
+      "entryFee": 3.788482122924506,
+      "strategy": "AMQS: High Probability Long (MARKET Order) -> Closed via Stop Loss (LIMIT Order)"
+    },
+    {
       "id": "r20c6i",
       "symbol": "ETH/USDT",
       "side": "LONG",
-      "status": "OPEN",
+      "status": "CLOSED",
       "entryTime": "2026-03-17T19:23:34.335Z",
-      "exitTime": null,
-      "exitPrice": null,
+      "exitTime": "2026-03-17T20:07:36.227Z",
+      "exitPrice": 2319.171894,
       "liquidationPrice": 1573.7394314488254,
-      "exitFee": 0,
-      "pnl": 0,
+      "exitFee": 0.23105034322716317,
+      "pnl": -12.585546656345693,
       "entryPrice": 2343.0363743654966,
       "qty": 0.49813112996263986,
       "leverage": 3,
       "margin": 389.04645223541723,
       "entryFee": 0.4668557426825007,
-      "strategy": "AMQS: High Probability Long (MARKET Order)"
+      "strategy": "AMQS: High Probability Long (MARKET Order) -> Closed via Stop Loss (LIMIT Order)"
     },
     {
       "id": "3kcqbm",
       "symbol": "BTC/USDT",
       "side": "LONG",
-      "status": "OPEN",
+      "status": "CLOSED",
       "entryTime": "2026-03-17T19:22:25.495Z",
-      "exitTime": null,
-      "exitPrice": null,
+      "exitTime": "2026-03-17T20:07:36.231Z",
+      "exitPrice": 74462.35549100001,
       "liquidationPrice": 50393.05497183031,
-      "exitFee": 0,
-      "pnl": 0,
+      "exitFee": 0.23211313960648194,
+      "pnl": -9.498516466391736,
       "entryPrice": 75026.88085136026,
       "qty": 0.015585938564254564,
       "leverage": 3,
       "margin": 389.7881185389827,
       "entryFee": 0.4677457422467793,
-      "strategy": "AMQS: High Probability Long (MARKET Order)"
+      "strategy": "AMQS: High Probability Long (MARKET Order) -> Closed via Stop Loss (LIMIT Order)"
     },
     {
       "id": "h1i7ek",
       "symbol": "BTC/USDT",
       "side": "LONG",
-      "status": "OPEN",
+      "status": "CLOSED",
       "entryTime": "2026-03-17T19:21:27.982Z",
-      "exitTime": null,
-      "exitPrice": null,
+      "exitTime": "2026-03-17T20:07:36.232Z",
+      "exitPrice": 74462.35549100001,
       "liquidationPrice": 50354.48570127483,
-      "exitFee": 0,
-      "pnl": 0,
+      "exitFee": 0.23227472455232465,
+      "pnl": -8.609152578021643,
       "entryPrice": 74969.45761976401,
       "qty": 0.015596788674003124,
       "leverage": 3,
       "margin": 389.76092916669757,
       "entryFee": 0.46771311500003704,
-      "strategy": "AMQS: High Probability Long (MARKET Order)"
+      "strategy": "AMQS: High Probability Long (MARKET Order) -> Closed via Stop Loss (LIMIT Order)"
     },
     {
       "id": "dbaqdk",
       "symbol": "BTC/USDT",
       "side": "LONG",
-      "status": "OPEN",
+      "status": "CLOSED",
       "entryTime": "2026-03-17T19:18:49.621Z",
-      "exitTime": null,
-      "exitPrice": null,
+      "exitTime": "2026-03-17T20:07:36.234Z",
+      "exitPrice": 74462.35549100001,
       "liquidationPrice": 50235.629168010004,
-      "exitFee": 0,
-      "pnl": 0,
+      "exitFee": 0.2330582319461858,
+      "pnl": -5.633713170452495,
       "entryPrice": 74792.500002,
       "qty": 0.01564939964693668,
       "leverage": 3,
       "margin": 390.15257437493676,
       "entryFee": 0.2340915446249621,
-      "strategy": "AMQS: High Probability Long (LIMIT Order)"
+      "strategy": "AMQS: High Probability Long (LIMIT Order) -> Closed via Stop Loss (LIMIT Order)"
     },
     {
       "id": "8lblb",
@@ -98,73 +152,73 @@
       "id": "jx8s4",
       "symbol": "ETH/USDT",
       "side": "LONG",
-      "status": "OPEN",
+      "status": "CLOSED",
       "entryTime": "2026-03-17T19:17:57.419Z",
-      "exitTime": null,
-      "exitPrice": null,
+      "exitTime": "2026-03-17T20:07:36.235Z",
+      "exitPrice": 2319.171894,
       "liquidationPrice": 1570.797354555,
-      "exitFee": 0,
-      "pnl": 0,
+      "exitFee": 0.23212604457494362,
+      "pnl": -10.217084111644592,
       "entryPrice": 2338.656111,
       "qty": 0.5004502796353387,
       "leverage": 3,
       "margin": 390.12703490694787,
       "entryFee": 0.23407622094416874,
-      "strategy": "AMQS: High Probability Long (LIMIT Order)"
+      "strategy": "AMQS: High Probability Long (LIMIT Order) -> Closed via Stop Loss (LIMIT Order)"
     },
     {
       "id": "bufjck",
       "symbol": "SOL/USDT",
       "side": "LONG",
-      "status": "OPEN",
+      "status": "CLOSED",
       "entryTime": "2026-03-17T19:16:30.460Z",
-      "exitTime": null,
-      "exitPrice": null,
+      "exitTime": "2026-03-17T20:07:36.241Z",
+      "exitPrice": 94.559455,
       "liquidationPrice": 64.27093308695696,
-      "exitFee": 0,
-      "pnl": 0,
+      "exitFee": 0.23144392668335428,
+      "pnl": -14.519989976481302,
       "entryPrice": 95.68873412450166,
       "qty": 12.238010819930924,
       "leverage": 3,
       "margin": 390.34658785371494,
       "entryFee": 0.46841590542445793,
-      "strategy": "AMQS: High Probability Long (MARKET Order)"
+      "strategy": "AMQS: High Probability Long (MARKET Order) -> Closed via Stop Loss (LIMIT Order)"
     },
     {
       "id": "6ueo29",
       "symbol": "ETH/USDT",
       "side": "LONG",
-      "status": "OPEN",
+      "status": "CLOSED",
       "entryTime": "2026-03-17T19:15:27.694Z",
-      "exitTime": null,
-      "exitPrice": null,
+      "exitTime": "2026-03-17T20:07:36.243Z",
+      "exitPrice": 2319.171894,
       "liquidationPrice": 1576.1794749464304,
-      "exitFee": 0,
-      "pnl": 0,
+      "exitFee": 0.23157222863814123,
+      "pnl": -14.428407535500327,
       "entryPrice": 2346.6691934686305,
       "qty": 0.4992562846187658,
       "leverage": 3,
       "margin": 390.52978092015474,
       "entryFee": 0.4686357371041857,
-      "strategy": "AMQS: High Probability Long (MARKET Order)"
+      "strategy": "AMQS: High Probability Long (MARKET Order) -> Closed via Stop Loss (LIMIT Order)"
     },
     {
       "id": "mh8koo",
       "symbol": "SOL/USDT",
       "side": "LONG",
-      "status": "OPEN",
+      "status": "CLOSED",
       "entryTime": "2026-03-17T19:15:01.211Z",
-      "exitTime": null,
-      "exitPrice": null,
+      "exitTime": "2026-03-17T20:07:36.245Z",
+      "exitPrice": 94.559455,
       "liquidationPrice": 64.24410482752525,
-      "exitFee": 0,
-      "pnl": 0,
+      "exitFee": 0.23173851236797888,
+      "pnl": -14.048832666363335,
       "entryPrice": 95.64879130648919,
       "qty": 12.2535875639289,
       "leverage": 3,
       "margin": 390.6802798860088,
       "entryFee": 0.4688163358632106,
-      "strategy": "AMQS: High Probability Long (MARKET Order)"
+      "strategy": "AMQS: High Probability Long (MARKET Order) -> Closed via Stop Loss (LIMIT Order)"
     },
     {
       "id": "bjrgu",
@@ -456,14 +510,6 @@
     }
   ],
   "balanceHistory": [
-    {
-      "time": "2026-03-17T18:29:40.445Z",
-      "balance": 9741.297817058598
-    },
-    {
-      "time": "2026-03-17T18:29:46.464Z",
-      "balance": 9739.768239623616
-    },
     {
       "time": "2026-03-17T18:29:52.500Z",
       "balance": 9740.131312717825
@@ -2455,11 +2501,20 @@
     {
       "time": "2026-03-17T19:23:33.299Z",
       "balance": 9726.585136633743
+    },
+    {
+      "time": "2026-03-17T20:08:02.637Z",
+      "balance": 9470.803841979747
+    },
+    {
+      "time": "2026-03-17T20:08:46.268Z",
+      "balance": 9276.87259567087
     }
   ],
   "strategyWeights": {
-    "AMQS: High Probability Long (MARKET Order)": -0.37440811527850004,
-    "AMQS: High Probability Long (LIMIT Order)": 0.67195
+    "AMQS: High Probability Long (MARKET Order)": -0.7307032067852943,
+    "AMQS: High Probability Long (LIMIT Order)": 0.3542795000000001,
+    "AMQS: High Probability Short (MARKET Order)": 0.35
   },
   "lastTelegramUpdateId": 0,
   "settings": {
@@ -2468,7 +2523,8 @@
     "maxTotalExposure": 0.6,
     "riskPerTrade": 0.02,
     "autoLeverage": true,
-    "tradingEnabled": true
+    "tradingEnabled": false,
+    "isBatchFull": false
   },
   "peakEquity": 10000
 }

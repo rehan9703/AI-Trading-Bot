@@ -30,6 +30,7 @@ import {
   AreaChart, 
   Area 
 } from 'recharts';
+import axios from 'axios';
 import { AdvancedRealTimeChart } from "react-ts-tradingview-widgets";
 import { cn } from './lib/utils';
 
@@ -72,75 +73,236 @@ interface RiskSettings {
   riskPerTrade: number;
   autoLeverage: boolean;
   tradingEnabled: boolean;
+  telegramToken: string;
+  telegramChatId: string;
 }
+
+// --- LocalStorage Helpers ---
+const useLocalStorage = <T,>(key: string, initialValue: T) => {
+  const [storedValue, setStoredValue] = useState<T>(() => {
+    try {
+      const item = window.localStorage.getItem(key);
+      return item ? JSON.parse(item) : initialValue;
+    } catch (error) {
+      return initialValue;
+    }
+  });
+
+  const setValue = (value: T | ((val: T) => T)) => {
+    try {
+      const valueToStore = value instanceof Function ? value(storedValue) : value;
+      setStoredValue(valueToStore);
+      window.localStorage.setItem(key, JSON.stringify(valueToStore));
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  return [storedValue, setValue] as const;
+};
 
 export default function App() {
   const [data, setData] = useState<QuantData | null>(null);
-  const [portfolio, setPortfolio] = useState<{balance: {USDT: string, BTC: string, total: string}, positions: any[], balanceHistory: any[]}>({
-    balance: { USDT: "0.00", BTC: "0.000000", total: "0.00" },
-    positions: [],
-    balanceHistory: []
+  const [portfolio, setPortfolio] = useLocalStorage('quantedge_portfolio', {
+    balance: { USDT: 100000, BTC: 0, total: 100000, marginUsed: 0 },
+    positions: [] as any[],
+    balanceHistory: [] as { time: string, balance: number }[]
   });
   const [chartData, setChartData] = useState(generateChartData());
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [symbol, setSymbol] = useState('BTC/USDT');
   const [userLeverage, setUserLeverage] = useState(10);
-  const [telegramStatus, setTelegramStatus] = useState<{blocked: boolean, activeChatId: string | null}>({ blocked: false, activeChatId: null });
-  const [settings, setSettings] = useState<RiskSettings>({
+  const [settings, setSettings] = useLocalStorage<RiskSettings>('quantedge_settings', {
     riskProfile: 'MODERATE',
     maxDailyDrawdown: 0.05,
     maxTotalExposure: 0.6,
     riskPerTrade: 0.02,
     autoLeverage: true,
-    tradingEnabled: true
+    tradingEnabled: true,
+    telegramToken: '',
+    telegramChatId: ''
   });
 
-  const closePosition = async (id: string) => {
-    try {
-      const res = await fetch(`/api/portfolio/positions/${id}/close`, { method: 'POST' });
-      if (res.ok) {
-        fetchData();
+  const sendAlert = async (type: string, title: string, message: string) => {
+    console.log(`[ALERT] ${type}: ${title}\n${message}`);
+    if (settings.telegramToken && settings.telegramChatId) {
+      try {
+        await axios.post(`https://api.telegram.org/bot${settings.telegramToken}/sendMessage`, {
+          chat_id: settings.telegramChatId,
+          text: `<b>${title}</b>\n${message}`,
+          parse_mode: 'HTML'
+        });
+      } catch (e) {
+        console.error("Telegram alert failed", e);
       }
-    } catch (e) {
-      console.error("Failed to close position", e);
     }
   };
 
-  const deletePosition = async (id: string) => {
-    try {
-      const res = await fetch(`/api/portfolio/positions/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        fetchData();
+  const calculateTotalEquity = (p = portfolio) => {
+    let equity = p.balance.USDT;
+    p.positions.forEach((pos: any) => {
+      if (pos.status === 'OPEN') {
+        const currentP = data?.price ? parseFloat(data.price) : pos.entryPrice;
+        const pnl = pos.side === 'LONG' ? (currentP - pos.entryPrice) * pos.qty : (pos.entryPrice - currentP) * pos.qty;
+        equity += pos.margin + pnl;
       }
-    } catch (e) {
-      console.error("Failed to delete position", e);
+    });
+    return equity;
+  };
+
+  const calculateLiquidationPrice = (entryPrice: number, leverage: number, side: 'LONG' | 'SHORT') => {
+    const maintenanceMargin = 0.005; 
+    if (side === 'LONG') {
+      return entryPrice * (1 - (1 / leverage) + maintenanceMargin);
+    } else {
+      return entryPrice * (1 + (1 / leverage) - maintenanceMargin);
     }
   };
 
-  const fetchPortfolio = async () => {
-    try {
-      const res = await fetch('/api/portfolio');
-      const json = res.headers.get('content-type')?.includes('application/json') ? await res.json() : null;
-      if (json) setPortfolio(json);
-    } catch (e) {
-      console.error("Failed to fetch portfolio", e);
-    }
+  const getBinanceFee = (isLimit: boolean, totalTrades: number) => {
+    let makerFee = 0.0002;
+    let takerFee = 0.0004;
+    if (totalTrades > 500) { makerFee = 0.0001; takerFee = 0.0003; }
+    else if (totalTrades > 100) { makerFee = 0.00015; takerFee = 0.00035; }
+    return isLimit ? makerFee : takerFee;
+  };
+
+  const closePosition = (id: string, reason: string = "Manual Close") => {
+    setPortfolio((prev: any) => {
+      const posIndex = prev.positions.findIndex((p: any) => p.id === id && p.status === 'OPEN');
+      if (posIndex === -1) return prev;
+      
+      const pos = { ...prev.positions[posIndex] };
+      const currentP = data?.price ? parseFloat(data.price) : pos.entryPrice;
+      const orderType = (data?.regime === 'VOLATILE' || data?.regime === 'RANGING') ? 'LIMIT' : 'MARKET';
+      
+      const slip = orderType === 'LIMIT' ? 0.0001 : 0.0005;
+      const execPrice = pos.side === 'LONG' ? currentP * (1 - slip) : currentP * (1 + slip);
+      
+      const grossPnl = pos.side === 'LONG' ? (execPrice - pos.entryPrice) * pos.qty : (pos.entryPrice - execPrice) * pos.qty;
+      const feeRate = getBinanceFee(orderType === 'LIMIT', prev.positions.length);
+      const exitFee = (pos.qty * execPrice) * feeRate;
+      const netPnl = grossPnl - exitFee - (pos.entryFee || 0);
+      
+      const updatedPos = {
+        ...pos,
+        status: 'CLOSED',
+        exitTime: new Date().toISOString(),
+        exitPrice: execPrice,
+        exitFee,
+        pnl: netPnl,
+        strategy: `${pos.strategy} -> Closed via ${reason}`
+      };
+
+      const newPositions = [...prev.positions];
+      newPositions[posIndex] = updatedPos;
+
+      const newUsdt = prev.balance.USDT + pos.margin + netPnl;
+      
+      sendAlert('TRADE', 'Position Closed', `${pos.symbol} (${pos.side})\nNet PnL: $${netPnl.toFixed(2)}`);
+
+      return {
+        ...prev,
+        balance: { ...prev.balance, USDT: newUsdt },
+        positions: newPositions
+      };
+    });
+  };
+
+  const deletePosition = (id: string) => {
+    setPortfolio((prev: any) => ({
+      ...prev,
+      positions: prev.positions.filter((p: any) => p.id !== id)
+    }));
+  };
+
+  const modifyFunds = (action: 'add' | 'remove', amount: number) => {
+    setPortfolio((prev: any) => ({
+      ...prev,
+      balance: { ...prev.balance, USDT: action === 'add' ? prev.balance.USDT + amount : prev.balance.USDT - amount }
+    }));
+  };
+
+  const updateSettings = (newS: Partial<RiskSettings>) => {
+    setSettings((prev: any) => ({ ...prev, ...newS }));
+  };
+
+  const executeTradeLocal = (signalData: QuantData) => {
+    if (!settings.tradingEnabled) return;
+    const { symbol, signal, price: priceStr, confidence, strategyNote: note, regime, parameters } = signalData;
+    const price = parseFloat(priceStr);
+    
+    // Limits
+    const openPositions = portfolio.positions.filter((p: any) => p.status === 'OPEN');
+    if (openPositions.length >= 3) return;
+
+    // Money Management
+    const totalEq = calculateTotalEquity();
+    const marginToUse = (totalEq / 3) * 0.98;
+    if (marginToUse > portfolio.balance.USDT || marginToUse < 10) return;
+
+    const currentLeverage = settings.autoLeverage ? (settings.riskProfile === 'CONSERVATIVE' ? 3 : settings.riskProfile === 'MODERATE' ? 10 : 25) : userLeverage;
+    
+    const orderType = (regime === 'VOLATILE' || regime === 'RANGING') ? 'LIMIT' : 'MARKET';
+    const slip = orderType === 'LIMIT' ? 0.0001 : 0.0005;
+    const execPrice = signal === 'BUY' ? price * (1 + slip) : price * (1 - slip);
+    const feeRate = getBinanceFee(orderType === 'LIMIT', portfolio.positions.length);
+    const qty = (marginToUse * currentLeverage) / execPrice;
+    const entryFee = (qty * execPrice) * feeRate;
+
+    const liqPrice = calculateLiquidationPrice(execPrice, currentLeverage, signal === 'BUY' ? 'LONG' : 'SHORT');
+
+    const newPos = {
+      id: Math.random().toString(36).substring(7),
+      symbol, side: signal === 'BUY' ? 'LONG' : 'SHORT', status: 'OPEN',
+      entryTime: new Date().toISOString(), exitTime: null, exitPrice: null,
+      entryPrice: execPrice, qty, leverage: currentLeverage, margin: marginToUse,
+      entryFee, pnl: 0, liquidationPrice: liqPrice, strategy: note
+    };
+
+    setPortfolio((prev: any) => ({
+      ...prev,
+      balance: { ...prev.balance, USDT: prev.balance.USDT - (marginToUse + entryFee) },
+      positions: [newPos, ...prev.positions]
+    }));
+
+    sendAlert('TRADE', 'New Position Opened', `${symbol} (${newPos.side})\nPrice: $${execPrice.toFixed(2)}\nLeverage: ${currentLeverage}x`);
+  };
+
+  const checkPositionsLocal = () => {
+    if (!data) return;
+    portfolio.positions.filter((p: any) => p.status === 'OPEN').forEach((pos: any) => {
+      const price = parseFloat(data.price);
+      const atr = parseFloat(data.parameters.volatility.atr) || (price * 0.01);
+      
+      let slMult = 2.0;
+      let tpMult = 3.0;
+      if (data.regime === 'RANGING' || data.regime === 'VOLATILE') {
+        slMult = 0.8;
+        tpMult = 1.5;
+      }
+
+      let shouldClose = false;
+      let reason = "";
+      if (pos.side === 'LONG') {
+        if (price <= pos.entryPrice - (atr * slMult)) { shouldClose = true; reason = "Stop Loss"; }
+        else if (price >= pos.entryPrice + (atr * tpMult)) { shouldClose = true; reason = "Take Profit"; }
+      } else {
+        if (price >= pos.entryPrice + (atr * slMult)) { shouldClose = true; reason = "Stop Loss"; }
+        else if (price <= pos.entryPrice - (atr * tpMult)) { shouldClose = true; reason = "Take Profit"; }
+      }
+
+      if (shouldClose) {
+        closePosition(pos.id, reason);
+      }
+    });
   };
 
   const fetchData = async () => {
     try {
-      const [marketRes, portfolioRes, telegramRes, settingsRes] = await Promise.all([
-        fetch(`/api/market-data?symbol=${symbol}`),
-        fetch('/api/portfolio'),
-        fetch('/api/telegram/status'),
-        fetch('/api/settings')
-      ]);
-      
+      const marketRes = await fetch(`/api/market-data?symbol=${symbol}`);
       const marketJson = marketRes.headers.get('content-type')?.includes('application/json') ? await marketRes.json() : null;
-      const portfolioJson = portfolioRes.headers.get('content-type')?.includes('application/json') ? await portfolioRes.json() : null;
-      const telegramJson = telegramRes.headers.get('content-type')?.includes('application/json') ? await telegramRes.json() : null;
-      const settingsJson = settingsRes.headers.get('content-type')?.includes('application/json') ? await settingsRes.json() : null;
       
       if (marketJson) {
         setData(marketJson);
@@ -150,52 +312,22 @@ export default function App() {
           zScore: parseFloat(marketJson.parameters.math.zScore),
           signal: marketJson.signal !== 'HOLD' ? marketJson.signal : null
         }]);
+        
+        // Trigger Local Engine
+        if (marketJson.signal !== 'HOLD') executeTradeLocal(marketJson);
+        checkPositionsLocal();
+        setLoading(false);
       }
-      if (portfolioJson) setPortfolio(portfolioJson);
-      if (telegramJson) setTelegramStatus(telegramJson);
-      if (settingsJson) setSettings(settingsJson);
-      
-      if (marketJson && portfolioJson && telegramJson && settingsJson) setLoading(false);
     } catch (err) {
       console.error("Fetch failed:", err);
     }
   };
 
-  const modifyFunds = async (action: 'add' | 'remove', amount: number) => {
-    try {
-      const res = await fetch('/api/modify-funds', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, amount })
-      });
-      if (res.ok) {
-        fetchPortfolio();
-      }
-    } catch (e) {
-      console.error("Failed to modify funds", e);
-    }
-  };
-
-  const updateSettings = async (newSettings: Partial<RiskSettings>) => {
-    try {
-      const res = await fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newSettings)
-      });
-      if (res.ok) {
-        const json = await res.json();
-        setSettings(json.settings);
-      }
-    } catch (e) {
-      console.error("Failed to update settings", e);
-    }
-  };
-
   useEffect(() => {
     fetchData();
-    
-    // WebSocket Setup
+    const interval = setInterval(fetchData, 2000); // Polling for fallback
+
+    // WebSocket Setup for real-time market data
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}`;
     const ws = new WebSocket(wsUrl);
@@ -212,8 +344,10 @@ export default function App() {
             zScore: parseFloat(marketJson.parameters.math.zScore),
             signal: marketJson.signal !== 'HOLD' ? marketJson.signal : null
           }]);
-        } else if (message.type === 'PORTFOLIO_UPDATE') {
-          fetchPortfolio();
+          
+          // Trigger Local Engine
+          if (marketJson.signal !== 'HOLD') executeTradeLocal(marketJson);
+          checkPositionsLocal();
         }
       } catch (e) {
         console.error("WS message error:", e);
@@ -225,6 +359,7 @@ export default function App() {
 
     return () => {
       ws.close();
+      clearInterval(interval);
     };
   }, [symbol]);
 
@@ -267,11 +402,19 @@ export default function App() {
               <h1 className="text-3xl font-bold tracking-tight">QuantEdge AI</h1>
               <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-500 text-[10px] font-bold tracking-tighter uppercase border border-emerald-500/20">Live System</span>
               <button 
-                onClick={() => window.open('/api/export/report', '_blank')}
+                onClick={() => {
+                  const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(portfolio));
+                  const downloadAnchorNode = document.createElement('a');
+                  downloadAnchorNode.setAttribute("href", dataStr);
+                  downloadAnchorNode.setAttribute("download", "quantedge_report.json");
+                  document.body.appendChild(downloadAnchorNode);
+                  downloadAnchorNode.click();
+                  downloadAnchorNode.remove();
+                }}
                 className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold tracking-widest uppercase transition-all"
               >
                 <FileText className="w-3.5 h-3.5 text-emerald-500" />
-                Export Report
+                Export Data
               </button>
               <select 
                 value={symbol}
@@ -299,13 +442,9 @@ export default function App() {
                 <input 
                   type="range" 
                   min="1" 
-                  max="1000" 
+                  max="125" 
                   value={userLeverage} 
-                  onChange={(e) => {
-                    const val = parseInt(e.target.value);
-                    setUserLeverage(val);
-                    fetch('/api/leverage', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ leverage: val }) });
-                  }}
+                  onChange={(e) => setUserLeverage(parseInt(e.target.value))}
                   className="w-32 accent-emerald-500"
                 />
               </div>
@@ -330,15 +469,15 @@ export default function App() {
           <div className="flex flex-wrap xl:justify-end gap-4 xl:gap-6 text-left xl:text-right">
             <div>
               <p className="text-[10px] uppercase tracking-widest text-white/30 mb-1">Available Margin</p>
-              <p className="text-2xl font-mono font-medium text-white">${parseFloat(portfolio.balance.USDT).toLocaleString()}</p>
+              <p className="text-2xl font-mono font-medium text-white">${portfolio.balance.USDT.toLocaleString()}</p>
             </div>
             <div>
               <p className="text-[10px] uppercase tracking-widest text-white/30 mb-1">Margin Used</p>
-              <p className="text-2xl font-mono font-medium text-amber-500">${parseFloat(portfolio.balance.marginUsed || '0').toLocaleString()}</p>
+              <p className="text-2xl font-mono font-medium text-amber-500">${portfolio.positions.filter((p: any) => p.status === 'OPEN').reduce((acc: number, p: any) => acc + p.margin, 0).toLocaleString()}</p>
             </div>
             <div>
               <p className="text-[10px] uppercase tracking-widest text-white/30 mb-1">Total Equity</p>
-              <p className="text-2xl font-mono font-medium text-emerald-500">${parseFloat(portfolio.balance.total).toLocaleString()}</p>
+              <p className="text-2xl font-mono font-medium text-emerald-500">${calculateTotalEquity().toLocaleString()}</p>
             </div>
             <div className="hidden xl:block w-px h-12 bg-white/10 mx-2" />
             <div>
@@ -894,88 +1033,73 @@ export default function App() {
             <div className="col-span-12 lg:col-span-6 bg-[#111112] border border-white/5 rounded-2xl p-8 flex flex-col">
              <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
               <Bell className="w-5 h-5 text-emerald-500" />
-              Telegram Alerts
+              Telegram Intelligence Settings
             </h3>
             <div className="space-y-4 flex-1">
               <div>
-                <label className="text-[10px] uppercase tracking-widest text-white/40 block mb-2">Bot Username</label>
-                <div className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-2 text-sm font-mono text-emerald-500">
-                  @trade97froge_bot
-                </div>
+                <label className="text-[10px] uppercase tracking-widest text-white/40 block mb-2">Bot API Token</label>
+                <input 
+                  type="password"
+                  placeholder="Paste your Bot Token here..."
+                  value={settings.telegramToken}
+                  onChange={(e) => updateSettings({ telegramToken: e.target.value })}
+                  className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-2 text-sm font-mono text-emerald-500 placeholder:text-white/10 focus:outline-none focus:border-emerald-500/50"
+                />
               </div>
               <div>
-                <label className="text-[10px] uppercase tracking-widest text-white/40 block mb-2">Active Chat ID</label>
-                <div className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-2 text-sm font-mono text-white/60">
-                  {telegramStatus.activeChatId || "Waiting for /start..."}
-                </div>
+                <label className="text-[10px] uppercase tracking-widest text-white/40 block mb-2">My Chat ID</label>
+                <input 
+                  type="text"
+                  placeholder="Enter your Chat ID..."
+                  value={settings.telegramChatId}
+                  onChange={(e) => updateSettings({ telegramChatId: e.target.value })}
+                  className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-2 text-sm font-mono text-white/60 placeholder:text-white/10 focus:outline-none focus:border-emerald-500/50"
+                />
               </div>
               <div>
-                <label className="text-[10px] uppercase tracking-widest text-white/40 block mb-2">Status</label>
+                <label className="text-[10px] uppercase tracking-widest text-white/40 block mb-2">Connection Status</label>
                 <div className={cn(
-                  "flex items-center gap-2 px-4 py-2 rounded-lg border",
-                  telegramStatus.blocked ? "bg-rose-500/10 border-rose-500/30" : "bg-white/5 border-white/5"
+                   "flex items-center gap-2 px-4 py-2 rounded-lg border",
+                   (!settings.telegramToken || !settings.telegramChatId) ? "bg-rose-500/10 border-rose-500/30" : "bg-emerald-500/10 border-emerald-500/30"
                 )}>
                   <div className={cn(
                     "w-2 h-2 rounded-full animate-pulse",
-                    telegramStatus.blocked ? "bg-rose-500" : "bg-emerald-500"
+                    (!settings.telegramToken || !settings.telegramChatId) ? "bg-rose-500" : "bg-emerald-500"
                   )} />
                   <span className={cn(
                     "text-xs font-mono",
-                    telegramStatus.blocked ? "text-rose-500" : "text-white"
+                    (!settings.telegramToken || !settings.telegramChatId) ? "text-rose-500" : "text-emerald-500"
                   )}>
-                    {telegramStatus.blocked ? "BLOCKED (ACTION REQUIRED)" : "CONNECTED & ACTIVE"}
+                    {(!settings.telegramToken || !settings.telegramChatId) ? "NOT CONFIGURED" : "READY TO BROADCAST"}
                   </span>
                 </div>
-                {telegramStatus.blocked && (
-                  <p className="text-[10px] text-rose-400 mt-2 leading-tight">
-                    Bot is blocked. You must open Telegram and click START to receive alerts.
-                  </p>
-                )}
               </div>
               <button 
-                onClick={async () => {
-                  try {
-                    const res = await fetch('/api/telegram/test', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ message: "🔔 <b>QuantEdge AI Alert</b>\nManual test signal triggered from Dashboard.\n\n<b>Bot:</b> @trade97froge_bot\n<b>Status:</b> Operational" })
-                    });
-                    const result = await res.json();
-                    if (result.success) {
-                      alert("✅ Test alert sent! Check your Telegram bot.");
-                    } else {
-                      alert("❌ Telegram Error\n\n" + result.error);
-                    }
-                  } catch (e) {
-                    alert("Failed to connect to server.");
-                  }
-                }}
-                className="w-full bg-emerald-500 hover:bg-emerald-400 text-black font-bold py-3 rounded-xl transition-all mt-4 flex items-center justify-center gap-2"
+                onClick={() => sendAlert('TEST', 'QuantEdge AI Test', 'Manual test signal triggered from your custom bot setting.')}
+                disabled={!settings.telegramToken || !settings.telegramChatId}
+                className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-30 disabled:hover:bg-emerald-500 text-black font-bold py-3 rounded-xl transition-all mt-4 flex items-center justify-center gap-2"
               >
                 <Zap className="w-4 h-4" />
                 Send Test Alert
               </button>
 
               <div className="mt-6 pt-6 border-t border-white/5 space-y-3">
-                <p className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Setup Guide</p>
+                <p className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Bot Setup Guide</p>
                 <div className="space-y-2">
                   <div className="flex gap-3 items-start">
                     <div className="w-4 h-4 rounded-full bg-white/10 flex items-center justify-center text-[10px] flex-shrink-0">1</div>
-                    <p className="text-[10px] text-white/50 leading-tight">Search for <span className="text-emerald-500">@trade97froge_bot</span> on Telegram.</p>
+                    <p className="text-[10px] text-white/50 leading-tight">Create a bot via <span className="text-emerald-500">@BotFather</span> on Telegram.</p>
                   </div>
                   <div className="flex gap-3 items-start">
                     <div className="w-4 h-4 rounded-full bg-white/10 flex items-center justify-center text-[10px] flex-shrink-0">2</div>
-                    <p className="text-[10px] text-white/50 leading-tight">Click <span className="text-white">START</span> to authorize the bot.</p>
+                    <p className="text-[10px] text-white/50 leading-tight">Paste the Token provided by BotFather above.</p>
                   </div>
                   <div className="flex gap-3 items-start">
                     <div className="w-4 h-4 rounded-full bg-white/10 flex items-center justify-center text-[10px] flex-shrink-0">3</div>
-                    <p className="text-[10px] text-white/50 leading-tight">Use <span className="text-emerald-500">@userinfobot</span> to find your numeric Chat ID.</p>
+                    <p className="text-[10px] text-white/50 leading-tight">Find your numeric ID via <span className="text-emerald-500">@userinfobot</span>.</p>
                   </div>
                 </div>
               </div>
-              <p className="text-[10px] text-white/20 text-center italic mt-2">
-                Telegram Bot Token: (Configured in Secrets)
-              </p>
             </div>
             </div>
           </div>
