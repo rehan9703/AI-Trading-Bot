@@ -115,6 +115,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [symbol, setSymbol] = useState('BTC/USDT');
+  const [timeframe, setTimeframe] = useState('5');
+  const [liveEquityBuffer, setLiveEquityBuffer] = useState<{time: string, balance: number}[]>([]);
   const [userLeverage, setUserLeverage] = useState(10);
   const [settings, setSettings] = useLocalStorage<RiskSettings>('quantedge_settings', {
     riskProfile: 'MODERATE',
@@ -142,11 +144,11 @@ export default function App() {
     }
   };
 
-  const calculateTotalEquity = (p = portfolio) => {
+  const calculateTotalEquity = (p = portfolio, currentData: QuantData | null = data) => {
     let equity = p.balance.USDT;
     p.positions.forEach((pos: any) => {
       if (pos.status === 'OPEN') {
-        const currentP = data?.price ? parseFloat(data.price) : pos.entryPrice;
+        const currentP = currentData?.price ? parseFloat(currentData.price) : pos.entryPrice;
         const pnl = pos.side === 'LONG' ? (currentP - pos.entryPrice) * pos.qty : (pos.entryPrice - currentP) * pos.qty;
         equity += pos.margin + pnl;
       }
@@ -316,11 +318,17 @@ export default function App() {
 
   const fetchData = async () => {
     try {
-      const marketRes = await fetch(`/api/market-data?symbol=${symbol}`);
+      const marketRes = await fetch(`/api/market-data?symbol=${symbol}&interval=${timeframe}`);
       const marketJson = marketRes.headers.get('content-type')?.includes('application/json') ? await marketRes.json() : null;
       
       if (marketJson) {
         setData(marketJson);
+        const currentEquity = calculateTotalEquity({ ...portfolio }, marketJson);
+        setLiveEquityBuffer(prev => {
+          const newBuffer = [...prev, { time: new Date().toISOString(), balance: currentEquity }];
+          return newBuffer.slice(-50);
+        });
+
         setChartData(prev => [...prev.slice(1), { 
           time: prev.length, 
           price: parseFloat(marketJson.price), 
@@ -339,25 +347,22 @@ export default function App() {
   };
 
   useEffect(() => {
+    setLoading(true);
     fetchData();
     const interval = setInterval(fetchData, 2000); // Polling for fallback
 
-    // High-Frequency Balance History Capture (Every 5s for real-time feel)
+    // High-Frequency Balance History Capture (Every 10s for persistent record)
     const historyInterval = setInterval(() => {
       const currentEquity = calculateTotalEquity();
       setPortfolio((prev: any) => {
         const newHistory = [...(prev.balanceHistory || [])];
-        const lastPoint = newHistory[newHistory.length - 1];
-        
-        // Only add if balance changed or every minute (to keep some spread)
-        // But for "all things real time", let's just add it every 5s and keep 200 points
         newHistory.push({ time: new Date().toISOString(), balance: currentEquity });
-        
-        // Keep last 200 points for a detailed view without slowing down the browser
         if (newHistory.length > 200) newHistory.shift();
         return { ...prev, balanceHistory: newHistory };
       });
-    }, 5000);
+      // Clear buffer when we commit to history to avoid jumps
+      setLiveEquityBuffer([]);
+    }, 10000);
 
     // WebSocket Setup for real-time market data
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -370,6 +375,13 @@ export default function App() {
         if (message.type === 'MARKET_DATA' && message.symbol === symbol) {
           const marketJson = message.data;
           setData(marketJson);
+          
+          const currentEq = calculateTotalEquity({ ...portfolio }, marketJson);
+          setLiveEquityBuffer(prev => {
+            const newBuffer = [...prev, { time: new Date().toISOString(), balance: currentEq }];
+            return newBuffer.slice(-50);
+          });
+
           setChartData(prev => [...prev.slice(1), { 
             time: prev.length, 
             price: parseFloat(marketJson.price), 
@@ -394,7 +406,7 @@ export default function App() {
       clearInterval(interval);
       clearInterval(historyInterval);
     };
-  }, [symbol]);
+  }, [symbol, timeframe]);
 
   if (!data) return (
     <div className="min-h-screen bg-[#0A0A0B] text-white flex items-center justify-center">
@@ -452,11 +464,23 @@ export default function App() {
               <select 
                 value={symbol}
                 onChange={(e) => setSymbol(e.target.value)}
-                className="ml-4 bg-[#111112] border border-white/10 rounded-lg px-3 py-1 text-sm font-mono text-white/80 focus:outline-none focus:border-emerald-500/50"
+                className="ml-4 bg-[#111112] border border-white/10 rounded-lg px-3 py-1.5 text-xs font-mono text-white/80 focus:outline-none focus:border-emerald-500/50"
               >
                 <option value="BTC/USDT">BTC/USDT</option>
                 <option value="ETH/USDT">ETH/USDT</option>
                 <option value="SOL/USDT">SOL/USDT</option>
+              </select>
+              <select 
+                value={timeframe}
+                onChange={(e) => setTimeframe(e.target.value)}
+                className="ml-2 bg-[#111112] border border-white/10 rounded-lg px-3 py-1.5 text-xs font-mono text-white/80 focus:outline-none focus:border-emerald-500/50"
+              >
+                <option value="1">1M (Scalping)</option>
+                <option value="5">5M (Standard)</option>
+                <option value="15">15M (Intraday)</option>
+                <option value="60">1H (Trend)</option>
+                <option value="240">4H (Macro)</option>
+                <option value="D">1D (Daily)</option>
               </select>
               <button
                 onClick={() => updateSettings({ tradingEnabled: !settings.tradingEnabled })}
@@ -538,7 +562,7 @@ export default function App() {
                 </h3>
                 <div className="h-[300px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={[...(portfolio.balanceHistory || []), { time: new Date().toISOString(), balance: calculateTotalEquity() }]}>
+                    <AreaChart data={[...(portfolio.balanceHistory || []), ...liveEquityBuffer]}>
                       <defs>
                         <linearGradient id="colorBalance" x1="0" y1="0" x2="0" y2="1">
                           <stop offset="5%" stopColor="#10b981" stopOpacity={0.4}/>
@@ -552,6 +576,7 @@ export default function App() {
                         stroke="#ffffff30" 
                         fontSize={10} 
                         minTickGap={30}
+                        hide={portfolio.balanceHistory?.length < 2}
                       />
                       <YAxis 
                         domain={['auto', 'auto']} 
@@ -573,7 +598,7 @@ export default function App() {
                         strokeWidth={3} 
                         fillOpacity={1} 
                         fill="url(#colorBalance)" 
-                        animationDuration={300}
+                        isAnimationActive={false} // Zero lag for "real-time" feel
                       />
                     </AreaChart>
                   </ResponsiveContainer>
@@ -671,6 +696,7 @@ export default function App() {
                   <div className="text-[10px] uppercase tracking-widest text-white/40 font-black flex items-center gap-2">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_8px_#10b981]" />
                     AI Neural Signal Node
+                    <span className="ml-1 px-1.5 py-0.5 rounded bg-white/5 border border-white/10 text-[8px] text-emerald-500/80 font-mono">[{timeframe === 'D' ? '1D' : timeframe + 'M'}]</span>
                   </div>
                   <div className="text-[9px] text-emerald-500/50 font-mono">LATENCY: 8ms | PKT: 100%</div>
                 </div>
@@ -761,16 +787,13 @@ export default function App() {
           <div className="col-span-12 lg:col-span-8 bg-[#111112] border border-white/5 rounded-2xl p-1 overflow-hidden min-h-[450px]">
             <AdvancedRealTimeChart 
               theme="dark" 
-              symbol={`BINANCE:${symbol.replace('/', '')}`}
-              autosize
-              interval="60"
-              timezone="Etc/UTC"
-              style="1"
-              locale="en"
-              toolbar_bg="#111112"
-              enable_publishing={false}
-              hide_side_toolbar={false}
-              allow_symbol_change={true}
+              autosize 
+              symbol={`BINANCE:${symbol.replace('/', '')}P`} 
+              interval={timeframe}
+              style="1" 
+              hide_top_toolbar={false}
+              allow_symbol_change={false}
+              save_image={false}
               container_id="tradingview_chart"
             />
           </div>
