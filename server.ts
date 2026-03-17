@@ -7,7 +7,7 @@ import fs from "fs";
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, BorderStyle, WidthType, HeadingLevel, AlignmentType, ShadingType } from "docx";
-import { getHybridProbability } from "./src/trading/ml/hybrid.js";
+import { getHybridProbability } from "./src/trading/ml/hybrid";
 
 // --- State & Live Data ---
 const DB_FILE = path.join(process.cwd(), 'db.json');
