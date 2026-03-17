@@ -30,7 +30,8 @@ import {
   Tooltip, 
   ResponsiveContainer, 
   AreaChart, 
-  Area 
+  Area,
+  ComposedChart
 } from 'recharts';
 import axios from 'axios';
 import { AdvancedRealTimeChart } from "react-ts-tradingview-widgets";
@@ -291,12 +292,20 @@ export default function App() {
 
       let shouldClose = false;
       let reason = "";
-      if (pos.side === 'LONG') {
-        if (price <= pos.entryPrice - (atr * slMult)) { shouldClose = true; reason = "Stop Loss"; }
-        else if (price >= pos.entryPrice + (atr * tpMult)) { shouldClose = true; reason = "Take Profit"; }
-      } else {
-        if (price >= pos.entryPrice + (atr * slMult)) { shouldClose = true; reason = "Stop Loss"; }
-        else if (price <= pos.entryPrice - (atr * tpMult)) { shouldClose = true; reason = "Take Profit"; }
+      
+      // Hard Liquidation Check
+      if (pos.side === 'LONG' && price <= pos.liquidationPrice) { shouldClose = true; reason = "Liquidation"; }
+      else if (pos.side === 'SHORT' && price >= pos.liquidationPrice) { shouldClose = true; reason = "Liquidation"; }
+      
+      // Standard SL/TP
+      if (!shouldClose) {
+        if (pos.side === 'LONG') {
+          if (price <= pos.entryPrice - (atr * slMult)) { shouldClose = true; reason = "Stop Loss"; }
+          else if (price >= pos.entryPrice + (atr * tpMult)) { shouldClose = true; reason = "Take Profit"; }
+        } else {
+          if (price >= pos.entryPrice + (atr * slMult)) { shouldClose = true; reason = "Stop Loss"; }
+          else if (price <= pos.entryPrice - (atr * tpMult)) { shouldClose = true; reason = "Take Profit"; }
+        }
       }
 
       if (shouldClose) {
@@ -650,17 +659,43 @@ export default function App() {
                 )}>
                   {data.signal}
                 </h2>
-                <div className="flex items-center gap-4 mt-4">
-                  <div>
-                    <p className="text-[10px] text-white/40 uppercase font-bold mb-1">Conf. Probability</p>
-                    <p className="text-xl font-black text-white font-mono">{data.confidence}%</p>
+                
+                <div className="grid grid-cols-3 gap-3 mt-6">
+                  <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 text-center">
+                    <p className="text-[9px] text-white/40 uppercase font-black mb-1 tracking-tighter text-center">TP Target</p>
+                    <p className="text-sm font-black text-emerald-500 font-mono">
+                      ${(parseFloat(data.price) * (data.signal === 'BUY' ? 1.025 : 0.975)).toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                    </p>
                   </div>
-                  <div className="w-px h-8 bg-white/10" />
-                  <div>
-                    <p className="text-[10px] text-white/40 uppercase font-bold mb-1">Profit Projection</p>
-                    <p className="text-xl font-black text-emerald-500 font-mono">+{((data.confidence / 100) * 2.5).toFixed(2)}%</p>
+                  <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 text-center">
+                    <p className="text-[9px] text-white/40 uppercase font-black mb-1 tracking-tighter text-center">SL Floor</p>
+                    <p className="text-sm font-black text-rose-500 font-mono">
+                      ${(parseFloat(data.price) * (data.signal === 'BUY' ? 0.985 : 1.015)).toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                    </p>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 text-center">
+                    <p className="text-[9px] text-white/40 uppercase font-black mb-1 tracking-tighter text-center">Liq. Price</p>
+                    <p className="text-sm font-black text-amber-500 font-mono">
+                      ${calculateLiquidationPrice(parseFloat(data.price), userLeverage, data.signal === 'BUY' ? 'LONG' : 'SHORT').toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                    </p>
                   </div>
                 </div>
+
+                <div className="mt-6 flex items-center gap-3">
+                  <div className="flex-1 space-y-2">
+                    <div className="flex justify-between items-center text-[9px] uppercase font-bold text-white/30">
+                      <span>Neural Consensus</span>
+                      <span className="text-emerald-500">{data.confidence}% Accuracy</span>
+                    </div>
+                    <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden flex">
+                      <div className="h-full bg-emerald-500 transition-all duration-1000" style={{ width: `${data.confidence}%` }} />
+                    </div>
+                  </div>
+                  <div className="w-10 h-10 rounded-full bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20 group">
+                    <BrainCircuit className="w-5 h-5 text-emerald-500 animate-[pulse_2s_infinite]" />
+                  </div>
+                </div>
+
                 <p className="text-[10px] text-white/40 mt-6 uppercase tracking-[0.2em] font-black border-t border-white/5 pt-4 flex items-center gap-2">
                   <ShieldCheck className="w-3 h-3 text-emerald-500" />
                   {data.strategyNote}
@@ -853,8 +888,14 @@ export default function App() {
           </div>
           <div className="h-[300px] w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" vertical={false} />
+              <ComposedChart data={chartData}>
+                <defs>
+                  <linearGradient id="colorNeural" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.1}/>
+                    <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
                 <XAxis dataKey="time" hide />
                 <YAxis domain={['auto', 'auto']} hide />
                 <Tooltip 
@@ -862,6 +903,7 @@ export default function App() {
                   itemStyle={{ color: '#fff', fontFamily: 'monospace' }}
                   labelStyle={{ display: 'none' }}
                 />
+                <Area type="monotone" dataKey="price" stroke="none" fillOpacity={1} fill="url(#colorNeural)" />
                 <Line 
                   type="monotone" 
                   dataKey="price" 
@@ -875,11 +917,11 @@ export default function App() {
                     if (payload.signal === 'SELL') {
                       return <circle key={`dot-${payload.time}`} cx={cx} cy={cy} r={6} fill="#ef4444" stroke="#fff" strokeWidth={2} />;
                     }
-                    return <span key={`dot-${payload.time}`} />;
+                    return null;
                   }}
                   activeDot={{ r: 4, fill: '#10b981' }}
                 />
-              </LineChart>
+              </ComposedChart>
             </ResponsiveContainer>
           </div>
         </div>
