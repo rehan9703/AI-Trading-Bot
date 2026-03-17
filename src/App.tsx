@@ -262,12 +262,28 @@ export default function App() {
 
   const executeTradeLocal = (signalData: QuantData, isManual: boolean = false) => {
     if (!settings.tradingEnabled && !isManual) return;
-    const { symbol, signal, price: priceStr, confidence, strategyNote: note, regime } = signalData;
+    const { symbol, signal, price: priceStr, confidence, strategyNote: note, regime, sentiment } = signalData;
     const price = parseFloat(priceStr);
     
+    // Neural Consensus Filtering (Auto-only)
+    if (!isManual) {
+      // 1. Sentiment Alignment Check
+      if (signal === 'BUY' && sentiment.label === 'BEARISH') return;
+      if (signal === 'SELL' && sentiment.label === 'BULLISH') return;
+
+      // 2. Minimum Confidence Threshold based on Timeframe
+      let minConf = 75;
+      if (timeframe === '1' || timeframe === '5') minConf = 85; // Scalping requires higher precision
+      if (confidence < minConf) return;
+
+      // 3. Risk Profile Guard
+      const totalEq = calculateTotalEquity();
+      if ((totalEq - 10000) / 10000 < -0.15 && settings.riskProfile === 'CONSERVATIVE') return; // Stop trading if down 15%
+    }
+
     // Limits
     const openPositions = portfolio.positions.filter((p: any) => p.status === 'OPEN');
-    if (openPositions.length >= 10 && !isManual) return; // Allow more manual trades
+    if (openPositions.length >= 10 && !isManual) return; 
 
     // Money Management
     const totalEq = calculateTotalEquity();
@@ -294,7 +310,8 @@ export default function App() {
       entryTime: new Date().toISOString(), exitTime: null, exitPrice: null,
       entryPrice: execPrice, qty, leverage: currentLeverage, margin: marginToUse,
       entryFee, pnl: 0, liquidationPrice: liqPrice, 
-      strategy: isManual ? "Manual Execution" : note
+      timeframe: timeframe,
+      strategy: isManual ? "Manual Execution" : `AI: ${note}`
     };
 
     setPortfolio((prev: any) => ({
@@ -303,7 +320,7 @@ export default function App() {
       positions: [newPos, ...prev.positions]
     }));
 
-    sendAlert('TRADE', isManual ? 'Manual Trade Opened' : 'AI Trade Opened', `${symbol} (${newPos.side})\nPrice: $${execPrice.toFixed(2)}\nLeverage: ${currentLeverage}x`);
+    sendAlert('TRADE', isManual ? 'Manual Trade Opened' : 'AI Neural Trade Opened', `${symbol} (${newPos.side})\nTimeframe: ${timeframe}\nPrice: $${execPrice.toFixed(2)}\nConfidence: ${confidence}%`);
   };
 
   const checkPositionsLocal = () => {
@@ -311,12 +328,15 @@ export default function App() {
     portfolio.positions.filter((p: any) => p.status === 'OPEN').forEach((pos: any) => {
       const price = parseFloat(data.price);
       const atr = parseFloat(data.parameters.volatility.atr) || (price * 0.01);
+      const { sentiment } = data;
       
       let slMult = 2.0;
       let tpMult = 3.0;
-      if (data.regime === 'RANGING' || data.regime === 'VOLATILE') {
-        slMult = 0.8;
-        tpMult = 1.5;
+      
+      // Dynamic Risk Adjustment based on Sentiment & Regime
+      if (data.regime === 'RANGING' || data.regime === 'VOLATILE' || sentiment.label === 'NEUTRAL') {
+        slMult = 1.2;
+        tpMult = 2.0;
       }
 
       let shouldClose = false;
@@ -326,6 +346,12 @@ export default function App() {
       if (pos.side === 'LONG' && price <= pos.liquidationPrice) { shouldClose = true; reason = "Liquidation"; }
       else if (pos.side === 'SHORT' && price >= pos.liquidationPrice) { shouldClose = true; reason = "Liquidation"; }
       
+      // Neural Sentiment Early Exit (Minimizes Loss)
+      if (!shouldClose) {
+        if (pos.side === 'LONG' && sentiment.label === 'BEARISH') { shouldClose = true; reason = "Sentiment Flip (Bearish)"; }
+        if (pos.side === 'SHORT' && sentiment.label === 'BULLISH') { shouldClose = true; reason = "Sentiment Flip (Bullish)"; }
+      }
+
       // Standard SL/TP
       if (!shouldClose) {
         if (pos.side === 'LONG') {
@@ -746,7 +772,31 @@ export default function App() {
                   {data.signal}
                 </h2>
                 
-                <div className="grid grid-cols-3 gap-3 mt-6">
+                <div className="grid grid-cols-2 gap-3 mt-6">
+                  <div className="col-span-2 p-3 rounded-xl bg-white/5 border border-white/5">
+                    <p className="text-[9px] text-white/40 uppercase font-black mb-3 tracking-widest text-center border-b border-white/5 pb-2">Neural Consensus Matrix</p>
+                    <div className="grid grid-cols-2 gap-y-2 px-1">
+                      <div className="flex items-center gap-2 text-[10px] font-bold">
+                        <div className={cn("w-2 h-2 rounded-sm", data.signal !== 'HOLD' ? "bg-emerald-500 shadow-[0_0_5px_#10b981]" : "bg-white/10")} />
+                        <span className="text-white/60">Trend Analysis</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-[10px] font-bold">
+                        <div className={cn("w-2 h-2 rounded-sm", parseFloat(data.parameters.momentum.macd) > 0 ? "bg-emerald-500 shadow-[0_0_5px_#10b981]" : "bg-rose-500 shadow-[0_0_5px_#f43f5e]")} />
+                        <span className="text-white/60">Momentum Engine</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-[10px] font-bold">
+                        <div className={cn("w-2 h-2 rounded-sm", data.regime === 'TRENDING' ? "bg-emerald-500 shadow-[0_0_5px_#10b981]" : "bg-amber-500 shadow-[0_0_5px_#f59e0b]")} />
+                        <span className="text-white/60">Volatility Guard</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-[10px] font-bold">
+                        <div className={cn("w-2 h-2 rounded-sm", data.sentiment.label === 'BULLISH' ? "bg-emerald-500 shadow-[0_0_5px_#10b981]" : data.sentiment.label === 'BEARISH' ? "bg-rose-500 shadow-[0_0_5px_#f43f5e]" : "bg-amber-500")} />
+                        <span className="text-white/60">News Sentiment</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-3 mt-4">
                   <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 text-center">
                     <p className="text-[9px] text-white/40 uppercase font-black mb-1 tracking-tighter text-center">TP Target</p>
                     <p className="text-sm font-black text-emerald-500 font-mono">
