@@ -1,0 +1,103 @@
+//@version=5
+strategy("QuantEdge AI Trading System [Master]", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=25, margin_long=100, margin_short=100)
+
+// ── MA Parameters ──
+fast_len = input.int(20, "Fast EMA")
+slow_len = input.int(50, "Slow EMA")
+major_len = input.int(200, "Major EMA")
+
+ema_fast = ta.ema(close, fast_len)
+ema_slow = ta.ema(close, slow_len)
+ema_major = ta.ema(close, major_len)
+
+plot(ema_fast, color=color.blue, title="EMA Fast")
+plot(ema_slow, color=color.orange, title="EMA Slow")
+plot(ema_major, color=color.red, title="EMA Major")
+
+// ── RSI ──
+rsi_len = input.int(14, "RSI Length")
+rsi = ta.rsi(close, rsi_len)
+
+// ── MACD ──
+[macdLine, signalLine, histLine] = ta.macd(close, 12, 26, 9)
+
+// ── Bollinger Bands ──
+bb_len = input.int(20, "BB Length")
+bb_mult = input.float(2.0, "BB Mult")
+[bb_mid, bb_upper, bb_lower] = ta.bb(close, bb_len, bb_mult)
+plot(bb_upper, color=color.gray, title="BB Upper")
+plot(bb_lower, color=color.gray, title="BB Lower")
+
+// ── ATR ──
+atr_len = input.int(14, "ATR Length")
+atr = ta.atr(atr_len)
+
+// ── Z-Score ──
+sma20 = ta.sma(close, 20)
+std20 = ta.stdev(close, 20)
+zscore = std20 == 0 ? 0 : (close - sma20) / std20
+
+// ── ADX ──
+[diplus, diminus, adx] = ta.dmi(14, 14)
+
+// ── Score System (Simplified for TV) ──
+float score = 0.0
+
+// EMAs
+score += (ema_fast > ema_slow ? 1.5 : -1.5)
+score += (close > ema_major ? 1.0 : -1.0)
+
+// RSI
+if rsi < 35
+    score += 2.0
+if rsi > 65
+    score -= 2.0
+
+// MACD
+if ta.crossover(macdLine, signalLine)
+    score += 2.0
+if ta.crossunder(macdLine, signalLine)
+    score -= 2.0
+
+// Z-Score
+if zscore < -2.0
+    score += 2.0
+if zscore > 2.0
+    score -= 2.0
+
+// BB
+if close < bb_lower
+    score += 1.5
+if close > bb_upper
+    score -= 1.5
+
+// Trend multiplier
+if adx > 30
+    score *= 1.2
+if adx < 15
+    score *= 0.5
+
+// ── Execution Logic ──
+min_score = input.float(4.0, "Minimum Signal Score")
+sl_mult = input.float(1.5, "Stop Loss ATR Multiplier")
+tp_mult = input.float(3.0, "Take Profit ATR Multiplier")
+
+bool buy_signal = score >= min_score and strategy.position_size == 0
+bool sell_signal = score <= -min_score and strategy.position_size == 0
+
+// Plot Signals
+plotshape(buy_signal, style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small, title="Buy")
+plotshape(sell_signal, style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, title="Sell")
+
+// Execute
+if buy_signal
+    strategy.entry("BUY", strategy.long)
+    strategy.exit("Exit BUY", "BUY", stop=close - (atr * sl_mult), limit=close + (atr * tp_mult))
+
+if sell_signal
+    strategy.entry("SELL", strategy.short)
+    strategy.exit("Exit SELL", "SELL", stop=close + (atr * sl_mult), limit=close - (atr * tp_mult))
+
+// ── Alerts ──
+alertcondition(buy_signal, title="🟢 BUY Signal", message='{"symbol": "{{ticker}}", "signal": "BUY", "price": {{close}}, "time": "{{time}}"}')
+alertcondition(sell_signal, title="🔴 SELL Signal", message='{"symbol": "{{ticker}}", "signal": "SELL", "price": {{close}}, "time": "{{time}}"}')
