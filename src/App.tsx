@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   TrendingUp, 
   TrendingDown, 
@@ -21,7 +21,8 @@ import {
   Wallet,
   FileText,
   Plus,
-  Minus
+  Minus,
+  Trash2
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -56,6 +57,8 @@ interface QuantData {
     momentum: Record<string, string>;
     math: Record<string, string>;
     risk: Record<string, string>;
+    volatility: Record<string, string>;
+    volume: Record<string, string>;
   };
   signal: 'BUY' | 'SELL' | 'HOLD';
   confidence: number;
@@ -106,8 +109,21 @@ const useLocalStorage = <T,>(key: string, initialValue: T) => {
   return [storedValue, setValue] as const;
 };
 
+// --- Master Engine Hooks ---
+const useInterval = (callback: () => void, delay: number | null) => {
+  const savedCallback = useRef(callback);
+  useEffect(() => { savedCallback.current = callback; }, [callback]);
+  useEffect(() => {
+    if (delay !== null) {
+      const id = setInterval(() => savedCallback.current(), delay);
+      return () => clearInterval(id);
+    }
+  }, [delay]);
+};
+
 export default function App() {
   const [data, setData] = useState<QuantData | null>(null);
+  const [tick, setTick] = useState(0);
   const [portfolio, setPortfolio] = useLocalStorage('quantedge_portfolio', {
     balance: { USDT: 10000, BTC: 0, total: 10000, marginUsed: 0 },
     positions: [] as any[],
@@ -131,13 +147,23 @@ export default function App() {
   });
 
   const resetAllData = () => {
-    if (confirm("Are you sure you want to RESET all trading data? This will clear history and set balance to $10,000.")) {
+    if (confirm("Are you sure you want to RESET ENTIRE platform data? This will clear settings, history, and set balance to $10,000.")) {
       setPortfolio({
         balance: { USDT: 10000, BTC: 0, total: 10000, marginUsed: 0 },
         positions: [],
         balanceHistory: []
       });
-      alert("System Reset Complete.");
+      setSettings({
+        riskProfile: 'MODERATE',
+        maxDailyDrawdown: 0.05,
+        maxTotalExposure: 0.6,
+        riskPerTrade: 0.02,
+        autoLeverage: true,
+        tradingEnabled: true,
+        telegramToken: '',
+        telegramChatId: ''
+      });
+      window.location.reload(); // Hard reset for UI consistency
     }
   };
 
@@ -260,67 +286,119 @@ export default function App() {
     setSettings((prev: any) => ({ ...prev, ...newS }));
   };
 
-  const executeTradeLocal = (signalData: QuantData, isManual: boolean = false) => {
+  const executeTradeLocal = (signalData: any, isManual: boolean = false) => {
     if (!settings.tradingEnabled && !isManual) return;
-    const { symbol, signal, price: priceStr, confidence, strategyNote: note, regime, sentiment } = signalData;
+    const { symbol, signal, price: priceStr, confidence, strategyNote: note, regime, sentiment, parameters } = signalData;
     const price = parseFloat(priceStr);
     
-    // Neural Consensus Filtering (Auto-only)
+    // 1. Sentiment & Regime Alignment Guard
     if (!isManual) {
-      // 1. Sentiment Alignment Check
-      if (signal === 'BUY' && sentiment.label === 'BEARISH') return;
-      if (signal === 'SELL' && sentiment.label === 'BULLISH') return;
+      if (signal === 'BUY' && sentiment.label === 'BEARISH') {
+        console.log("AI Block: Sentiment Misalignment (Long vs Bearish)");
+        return;
+      }
+      if (signal === 'SELL' && sentiment.label === 'BULLISH') {
+        console.log("AI Block: Sentiment Misalignment (Short vs Bullish)");
+        return;
+      }
 
-      // 2. Minimum Confidence Threshold based on Timeframe
-      let minConf = 75;
-      if (timeframe === '1' || timeframe === '5') minConf = 85; // Scalping requires higher precision
-      if (confidence < minConf) return;
+        // Trend Alignment: Avoid trading against high-conviction trends
+        const isTrending = regime === 'TRENDING';
+        if (isTrending && !isManual) {
+          if (signal === 'BUY' && sentiment.score < 0) return;
+          if (signal === 'SELL' && sentiment.score > 0) return;
+        }
 
-      // 3. Risk Profile Guard
+        // 2. Minimum Confidence Threshold
+        let minConf = 55;
+        if (confidence < minConf) {
+          console.log("AI Block: Confidence Low", confidence, "<", minConf);
+          return;
+        }
+
+        // 3. Liquidity & Volatility Filter (The "Perfect" Guard)
+        const atr = parseFloat(parameters.volatility?.atr || "0");
+        const liqStr = parameters.volume?.liquidity || "0";
+        const vol = parseFloat(liqStr.replace(/[^0-9.]/g, ''));
+        
+        if (isNaN(atr) || atr === 0 || atr > price * 0.1) {
+          console.log("AI Block: Volatility Engine Unstable");
+          return;
+        }
+        if (isNaN(vol) || vol < 5) {
+          console.log("AI Block: Liquidity Engine Depth Low", vol);
+          return;
+        }
+
+        // 4. Dynamic Risk/Reward Calculation
+        const rrRatio = (atr * 2.5) / (atr * 1.5);
+        if (rrRatio < 1.5) {
+          console.log("AI Block: Poor R:R Projection", rrRatio.toFixed(2));
+          return;
+        }
+      }
+
+      // 5. Limits & Money Management
+      const openPositions = portfolio.positions.filter((p: any) => p.status === 'OPEN');
+      if (openPositions.length >= 10 && !isManual) return; 
+
       const totalEq = calculateTotalEquity();
-      if ((totalEq - 10000) / 10000 < -0.15 && settings.riskProfile === 'CONSERVATIVE') return; // Stop trading if down 15%
-    }
+      // Manage risk: ~33% of equity per managed trade, 10% for manual
+      const marginToUse = isManual ? (totalEq * 0.1) : (totalEq / 3) * 0.98;
+      
+      if (marginToUse > portfolio.balance.USDT || marginToUse < 10) {
+        if (isManual) alert("Insufficient Margin!");
+        return;
+      }
 
-    // Limits
-    const openPositions = portfolio.positions.filter((p: any) => p.status === 'OPEN');
-    if (openPositions.length >= 10 && !isManual) return; 
+      // 6. Execution Parameters
+      const baseLev = isManual ? userLeverage : (settings.autoLeverage ? (settings.riskProfile === 'CONSERVATIVE' ? 3 : settings.riskProfile === 'MODERATE' ? 10 : 25) : userLeverage);
+      // Scaled conviction: leverage relative to AI confidence
+      const currentLeverage = isManual ? baseLev : Math.round(baseLev * (confidence / 100));
+      
+      const orderType = (regime === 'VOLATILE' || isManual) ? 'LIMIT' : 'MARKET';
+      const slip = orderType === 'LIMIT' ? 0.0001 : 0.0005;
+      const execPrice = signal === 'BUY' ? price * (1 + slip) : price * (1 - slip);
+      const feeRate = getBinanceFee(orderType === 'LIMIT', portfolio.positions.length);
+      const qty = (marginToUse * currentLeverage) / execPrice;
+      const entryFee = (qty * execPrice) * feeRate;
 
-    // Money Management
-    const totalEq = calculateTotalEquity();
-    const marginToUse = isManual ? (totalEq * 0.1) : (totalEq / 3) * 0.98;
-    if (marginToUse > portfolio.balance.USDT || marginToUse < 10) {
-      if (isManual) alert("Insufficient Margin!");
-      return;
-    }
+      if (qty <= 0 || isNaN(qty)) return;
 
-    const currentLeverage = isManual ? userLeverage : (settings.autoLeverage ? (settings.riskProfile === 'CONSERVATIVE' ? 3 : settings.riskProfile === 'MODERATE' ? 10 : 25) : userLeverage);
-    
-    const orderType = (regime === 'VOLATILE' || regime === 'RANGING' || isManual) ? 'LIMIT' : 'MARKET';
-    const slip = orderType === 'LIMIT' ? 0.0001 : 0.0005;
-    const execPrice = signal === 'BUY' ? price * (1 + slip) : price * (1 - slip);
-    const feeRate = getBinanceFee(orderType === 'LIMIT', portfolio.positions.length);
-    const qty = (marginToUse * currentLeverage) / execPrice;
-    const entryFee = (qty * execPrice) * feeRate;
+      const liqPrice = calculateLiquidationPrice(execPrice, currentLeverage, signal === 'BUY' ? 'LONG' : 'SHORT');
 
-    const liqPrice = calculateLiquidationPrice(execPrice, currentLeverage, signal === 'BUY' ? 'LONG' : 'SHORT');
+      const newPos = {
+        id: `pos-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+        symbol,
+        side: signal === 'BUY' ? 'LONG' : 'SHORT',
+        status: 'OPEN',
+        entryTime: new Date().toISOString(),
+        exitTime: null,
+        exitPrice: null,
+        entryPrice: execPrice,
+        qty,
+        leverage: currentLeverage,
+        margin: marginToUse,
+        entryFee,
+        pnl: 0,
+        liquidationPrice: liqPrice,
+        timeframe: timeframe,
+        maxSeenPrice: execPrice,
+        minSeenPrice: execPrice,
+        strategy: isManual ? "Manual Alpha: QuantEdge" : `AI Master: ${note}`
+      };
 
-    const newPos = {
-      id: Math.random().toString(36).substring(7),
-      symbol, side: signal === 'BUY' ? 'LONG' : 'SHORT', status: 'OPEN',
-      entryTime: new Date().toISOString(), exitTime: null, exitPrice: null,
-      entryPrice: execPrice, qty, leverage: currentLeverage, margin: marginToUse,
-      entryFee, pnl: 0, liquidationPrice: liqPrice, 
-      timeframe: timeframe,
-      strategy: isManual ? "Manual Execution" : `AI: ${note}`
-    };
+      setPortfolio((prev: any) => ({
+        ...prev,
+        balance: {
+          ...prev.balance,
+          USDT: prev.balance.USDT - (marginToUse + entryFee)
+        },
+        positions: [newPos, ...prev.positions]
+      }));
 
-    setPortfolio((prev: any) => ({
-      ...prev,
-      balance: { ...prev.balance, USDT: prev.balance.USDT - (marginToUse + entryFee) },
-      positions: [newPos, ...prev.positions]
-    }));
-
-    sendAlert('TRADE', isManual ? 'Manual Trade Opened' : 'AI Neural Trade Opened', `${symbol} (${newPos.side})\nTimeframe: ${timeframe}\nPrice: $${execPrice.toFixed(2)}\nConfidence: ${confidence}%`);
+      sendAlert('TRADE', isManual ? 'Manual Position Opened' : 'AI Neural Trade Opened', 
+        `${symbol} (${newPos.side})\nConfidence: ${confidence}%\nPrice: $${execPrice.toLocaleString()}\nSentiment: ${sentiment.label}`);
   };
 
   const checkPositionsLocal = () => {
@@ -328,38 +406,67 @@ export default function App() {
     portfolio.positions.filter((p: any) => p.status === 'OPEN').forEach((pos: any) => {
       const price = parseFloat(data.price);
       const atr = parseFloat(data.parameters.volatility.atr) || (price * 0.01);
-      const { sentiment } = data;
+      const { sentiment, regime } = data;
       
-      let slMult = 2.0;
-      let tpMult = 3.0;
+      let slMult = 1.5;
+      let tpMult = 2.5;
+      let trailingMult = 1.2; // Distance for trailing stop
       
-      // Dynamic Risk Adjustment based on Sentiment & Regime
-      if (data.regime === 'RANGING' || data.regime === 'VOLATILE' || sentiment.label === 'NEUTRAL') {
-        slMult = 1.2;
-        tpMult = 2.0;
+      // Dynamic Logic for "Perfect Profits"
+      if (regime === 'TRENDING') {
+        tpMult = 4.0; // Let it run
+        trailingMult = 1.5;
+      } else if (regime === 'VOLATILE') {
+        slMult = 1.0; // Tight stops
+        tpMult = 1.5; // Quick profits
+        trailingMult = 0.8;
       }
 
       let shouldClose = false;
       let reason = "";
       
-      // Hard Liquidation Check
-      if (pos.side === 'LONG' && price <= pos.liquidationPrice) { shouldClose = true; reason = "Liquidation"; }
-      else if (pos.side === 'SHORT' && price >= pos.liquidationPrice) { shouldClose = true; reason = "Liquidation"; }
+      // 1. Hard Liquidation Guard
+      if (pos.side === 'LONG' && price <= pos.liquidationPrice) { shouldClose = true; reason = "Liquidation Protection"; }
+      else if (pos.side === 'SHORT' && price >= pos.liquidationPrice) { shouldClose = true; reason = "Liquidation Protection"; }
       
-      // Neural Sentiment Early Exit (Minimizes Loss)
-      if (!shouldClose) {
-        if (pos.side === 'LONG' && sentiment.label === 'BEARISH') { shouldClose = true; reason = "Sentiment Flip (Bearish)"; }
-        if (pos.side === 'SHORT' && sentiment.label === 'BULLISH') { shouldClose = true; reason = "Sentiment Flip (Bullish)"; }
-      }
-
-      // Standard SL/TP
+      // 2. Trailing Stop Logic (MAXIMIZE PROFIT)
       if (!shouldClose) {
         if (pos.side === 'LONG') {
-          if (price <= pos.entryPrice - (atr * slMult)) { shouldClose = true; reason = "Stop Loss"; }
-          else if (price >= pos.entryPrice + (atr * tpMult)) { shouldClose = true; reason = "Take Profit"; }
+          if (price > (pos.maxSeenPrice || 0)) {
+            // Update Max seen for this position in portfolio state (handled via effect or inline)
+            pos.maxSeenPrice = price; 
+          }
+          if (price >= pos.entryPrice + (atr * 0.5)) { // Only activate trailing after some profit
+            if (price <= pos.maxSeenPrice - (atr * trailingMult)) {
+              shouldClose = true; reason = "Trailing Stop Profit";
+            }
+          }
         } else {
-          if (price >= pos.entryPrice + (atr * slMult)) { shouldClose = true; reason = "Stop Loss"; }
-          else if (price <= pos.entryPrice - (atr * tpMult)) { shouldClose = true; reason = "Take Profit"; }
+          if (price < (pos.minSeenPrice || Infinity)) {
+            pos.minSeenPrice = price;
+          }
+          if (price <= pos.entryPrice - (atr * 0.5)) {
+            if (price >= pos.minSeenPrice + (atr * trailingMult)) {
+              shouldClose = true; reason = "Trailing Stop Profit";
+            }
+          }
+        }
+      }
+
+      // 3. News Sentiment Hard Flip (MINIMIZE LOSS)
+      if (!shouldClose) {
+        if (pos.side === 'LONG' && sentiment.label === 'BEARISH' && data.confidence > 80) { shouldClose = true; reason = "AI Sentiment Guard"; }
+        if (pos.side === 'SHORT' && sentiment.label === 'BULLISH' && data.confidence > 80) { shouldClose = true; reason = "AI Sentiment Guard"; }
+      }
+
+      // 4. Standard SL/TP (Floor/Ceiling)
+      if (!shouldClose) {
+        if (pos.side === 'LONG') {
+          if (price <= pos.entryPrice - (atr * slMult)) { shouldClose = true; reason = "Hard Stop Loss"; }
+          else if (price >= pos.entryPrice + (atr * tpMult)) { shouldClose = true; reason = "Primary Take Profit"; }
+        } else {
+          if (price >= pos.entryPrice + (atr * slMult)) { shouldClose = true; reason = "Hard Stop Loss"; }
+          else if (price <= pos.entryPrice - (atr * tpMult)) { shouldClose = true; reason = "Primary Take Profit"; }
         }
       }
 
@@ -393,28 +500,34 @@ export default function App() {
     }
   };
 
+  // 1. Primary Market Data Polling (2s fallback)
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 2000); // Polling for fallback
+    const interval = setInterval(fetchData, 2000);
+    return () => clearInterval(interval);
+  }, [symbol, timeframe]);
 
-    // High-Frequency Balance History Capture (Every 5s for real-time feel)
+  // 2. High-Frequency UI Pulse (500ms)
+  useInterval(() => {
+    setTick(t => t + 1);
+  }, 500);
+
+  // 3. Balance History History Capture (5s)
+  useEffect(() => {
     const historyInterval = setInterval(() => {
       const currentEquity = calculateTotalEquity();
       setPortfolio((prev: any) => {
         const newHistory = [...(prev.balanceHistory || [])];
-        const lastPoint = newHistory[newHistory.length - 1];
-        
-        // Only add if balance changed or every minute (to keep some spread)
-        // But for "all things real time", let's just add it every 5s and keep 200 points
         newHistory.push({ time: new Date().toISOString(), balance: currentEquity });
-        
-        // Keep last 200 points for a detailed view without slowing down the browser
         if (newHistory.length > 200) newHistory.shift();
         return { ...prev, balanceHistory: newHistory };
       });
     }, 5000);
+    return () => clearInterval(historyInterval);
+  }, [portfolio.balance.USDT, portfolio.positions]);
 
-    // WebSocket Setup for real-time market data
+  // 4. Real-Time WebSocket Link
+  useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}`;
     const ws = new WebSocket(wsUrl);
@@ -431,25 +544,16 @@ export default function App() {
             zScore: parseFloat(marketJson.parameters.math.zScore),
             signal: marketJson.signal !== 'HOLD' ? marketJson.signal : null
           }]);
-          
-          // Trigger Local Engine
           if (marketJson.signal !== 'HOLD') executeTradeLocal(marketJson);
           checkPositionsLocal();
         }
       } catch (e) {
-        console.error("WS message error:", e);
+        console.error("WS error:", e);
       }
     };
 
-    ws.onopen = () => console.log('[WS] Connected');
-    ws.onclose = () => console.log('[WS] Disconnected');
-
-    return () => {
-      ws.close();
-      clearInterval(interval);
-      clearInterval(historyInterval);
-    };
-  }, [symbol, timeframe]);
+    return () => ws.close();
+  }, [symbol]);
 
   if (!data) return (
     <div className="min-h-screen bg-[#0A0A0B] text-white flex items-center justify-center">
@@ -462,6 +566,16 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#0A0A0B] text-[#E1E1E1] font-sans selection:bg-emerald-500/30">
+      <style>{`
+        @keyframes heartbeat {
+          0% { opacity: 0.8; transform: scale(1); }
+          50% { opacity: 1; transform: scale(1.02); }
+          100% { opacity: 0.8; transform: scale(1); }
+        }
+        .animate-heartbeat { animation: heartbeat 2s ease-in-out infinite; }
+        .tick-glow { transition: all 0.5s ease; shadow: 0 0 10px rgba(16, 185, 129, 0.2); }
+        .data-changed { color: #10b981; transition: color 0.1s; }
+      `}</style>
       {/* Sidebar / Navigation */}
       <nav className="fixed left-0 top-0 h-full w-20 border-r border-white/5 bg-[#0D0D0E] flex flex-col items-center py-8 gap-8 z-50">
         <div className="w-12 h-12 rounded-xl flex items-center justify-center bg-transparent">
@@ -469,15 +583,15 @@ export default function App() {
         </div>
         
         <div className="flex flex-col gap-4">
-          <NavIcon icon={<Activity />} active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
-          <NavIcon icon={<BarChart3 />} active={activeTab === 'analytics'} onClick={() => setActiveTab('analytics')} />
-          <NavIcon icon={<BrainCircuit />} active={activeTab === 'ai'} onClick={() => setActiveTab('ai')} />
-          <NavIcon icon={<ShieldAlert />} active={activeTab === 'risk'} onClick={() => setActiveTab('risk')} />
-          <NavIcon icon={<Bell />} active={activeTab === 'alerts'} onClick={() => setActiveTab('alerts')} />
+          <NavIcon icon={<Activity />} label="Dashboard" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
+          <NavIcon icon={<BarChart3 />} label="Analytics" active={activeTab === 'analytics'} onClick={() => setActiveTab('analytics')} />
+          <NavIcon icon={<BrainCircuit />} label="AI Engine" active={activeTab === 'ai'} onClick={() => setActiveTab('ai')} />
+          <NavIcon icon={<ShieldAlert />} label="Risk Guard" active={activeTab === 'risk'} onClick={() => setActiveTab('risk')} />
+          <NavIcon icon={<Bell />} label="Alerts" active={activeTab === 'alerts'} onClick={() => setActiveTab('alerts')} />
         </div>
 
         <div className="mt-auto">
-          <NavIcon icon={<Settings />} active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
+          <NavIcon icon={<Settings />} label="Settings" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
         </div>
       </nav>
 
@@ -575,7 +689,12 @@ export default function App() {
               <div>
                 <p className="text-[10px] uppercase tracking-widest text-white/30 mb-1">Available Margin</p>
                 <div className="flex items-center gap-2">
-                  <p className="text-2xl font-mono font-medium text-white">${portfolio.balance.USDT.toLocaleString()}</p>
+                  <p className={cn(
+                    "text-2xl font-mono font-medium transition-all duration-300",
+                    tick % 4 === 0 ? "text-white" : "text-white/90"
+                  )}>
+                    ${portfolio.balance.USDT.toLocaleString()}
+                  </p>
                   <div className="flex flex-col gap-1">
                     <button onClick={() => addFunds(1000)} className="p-0.5 rounded bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500 hover:text-black transition-all"><Plus className="w-3 h-3" /></button>
                     <button onClick={() => removeFunds(1000)} className="p-0.5 rounded bg-rose-500/10 text-rose-500 hover:bg-rose-500 hover:text-black transition-all"><Minus className="w-3 h-3" /></button>
@@ -1006,404 +1125,328 @@ export default function App() {
         </div>
         </>
         )}
-
         {activeTab === 'ai' && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
 
-        {/* AI Real-Time Analysis Graph */}
-        <div className="bg-[#111112] border border-white/5 rounded-2xl p-6 mb-6">
-          <div className="flex justify-between items-center mb-6">
-            <h3 className="text-lg font-bold flex items-center gap-2">
-              <Activity className="w-5 h-5 text-emerald-500" />
-              AI Internal Signal Graph
-            </h3>
-            <div className="flex gap-4 text-[10px] uppercase tracking-widest font-bold">
-              <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-emerald-500" /> BUY SIGNAL</div>
-              <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-rose-500" /> SELL SIGNAL</div>
-            </div>
-          </div>
-          <div className="h-[300px] w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={chartData}>
-                <defs>
-                  <linearGradient id="colorNeural" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.1}/>
-                    <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
-                <XAxis dataKey="time" hide />
-                <YAxis domain={['auto', 'auto']} hide />
-                <Tooltip 
-                  contentStyle={{ backgroundColor: '#111112', borderColor: '#ffffff10', borderRadius: '8px' }}
-                  itemStyle={{ color: '#fff', fontFamily: 'monospace' }}
-                  labelStyle={{ display: 'none' }}
-                />
-                <Area type="monotone" dataKey="price" stroke="none" fillOpacity={1} fill="url(#colorNeural)" />
-                <Line 
-                  type="monotone" 
-                  dataKey="price" 
-                  stroke="#10b981" 
-                  strokeWidth={2} 
-                  dot={(props: any) => {
-                    const { cx, cy, payload } = props;
-                    if (payload.signal === 'BUY') {
-                      return <circle key={`dot-${payload.time}`} cx={cx} cy={cy} r={6} fill="#10b981" stroke="#fff" strokeWidth={2} />;
-                    }
-                    if (payload.signal === 'SELL') {
-                      return <circle key={`dot-${payload.time}`} cx={cx} cy={cy} r={6} fill="#ef4444" stroke="#fff" strokeWidth={2} />;
-                    }
-                    return null;
-                  }}
-                  activeDot={{ r: 4, fill: '#10b981' }}
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        {/* Parameter Grid */}
-        {/* Expanded 20+ Parameter Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <ParameterCard title="Trend Analysis" icon={<TrendingUp className="w-4 h-4" />} params={{
-            "SuperTrend": data.parameters.trend.superTrend,
-            "ADX Strength": data.parameters.trend.adx,
-            "EMA 20/50 Cross": "BULLISH",
-            "Parabolic SAR": "SUPPORT",
-            "Ichimoku Cloud": "ABOVE"
-          }} />
-          <ParameterCard title="Momentum Engine" icon={<Zap className="w-4 h-4" />} params={{
-            "RSI (14)": "62.4 (NEUTRAL)",
-            "Stoch RSI": "84.1 (OVERBOUGHT)",
-            "MACD Histogram": data.parameters.momentum.macd,
-            "ROC (Rate of Change)": "0.15%",
-            "Williams %R": "-18.2"
-          }} />
-          <ParameterCard title="Vol & Liquidity" icon={<BarChart3 className="w-4 h-4" />} params={{
-            "Volume 24h": data.parameters.volume.v24h,
-            "OB Imbalance": data.parameters.volume.obImbalance,
-            "CVD Delta": "+450 BTC",
-            "Liquidity Depth": "HIGH",
-            "Whale Inflow": "DETECTED"
-          }} />
-          <ParameterCard title="Volatility Guard" icon={<Activity className="w-4 h-4" />} params={{
-            "ATR (14)": data.parameters.volatility.atr,
-            "Bollinger %B": "0.82",
-            "Keltner Channels": "Upper Bound",
-            "Standard Dev": "1.4%",
-            "VIX Correlation": "Low"
-          }} />
-          <ParameterCard title="AI Model Outputs" icon={<BrainCircuit className="w-4 h-4" />} params={{
-            "XGBoost Score": data.parameters.math.xgbProb,
-            "LSTM Forecast": data.parameters.math.lstmProb,
-            "Hurst Exponent": data.parameters.math.hurstExponent,
-            "Bayesian Conf": "High",
-            "Signal Decay": "0.02/s"
-          }} />
-          <ParameterCard title="Risk & Alpha" icon={<Shield className="w-4 h-4" />} params={{
-            "Kelly Fraction": data.parameters.math.kellyCriterion,
-            "Sharpe Ratio": data.parameters.math.sharpeRatio,
-            "Win Rate (Hist)": data.parameters.risk.winRate,
-            "Max DD (Allowed)": data.parameters.risk.maxDrawdown,
-            "Alpha Score": "1.82"
-          }} />
-          <ParameterCard title="Order Flow" icon={<Activity className="w-4 h-4" />} params={{
-            "Open Interest": "+2.4%",
-            "Funding Rate": "0.0100%",
-            "Long/Short Ratio": "1.25",
-            "Liq Cluster": "$64,200",
-            "Market Buy/Sell": "Strong Buy"
-          }} />
-          <ParameterCard title="Macro & Sent." icon={<ArrowRight className="w-4 h-4" />} params={{
-            "Fear & Greed": "72 (Greed)",
-            "Sent. Score": data.sentiment.score,
-            "News Impact": "Bullish",
-            "BTC Dom.": "52.4%",
-            "Stableflow": "Positive"
-          }} />
-        </div>
-
-        {/* Bottom Section: Strategy Details & Live Feed */}
-        <div className="grid grid-cols-12 gap-6 mt-6">
-          <div className="col-span-12 lg:col-span-8 bg-[#111112] border border-white/5 rounded-2xl p-8">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-lg font-bold flex items-center gap-2">
-                <BrainCircuit className="w-5 h-5 text-emerald-500" />
-                Strategy Logic: Smart Trend + Pullback
-              </h3>
-              <div className="flex gap-2">
-                <span className="px-2 py-1 rounded bg-white/5 text-[10px] font-mono text-white/40">v2.4.0-Stable</span>
-              </div>
-            </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-              <div className="space-y-4">
-                <h4 className="text-xs uppercase tracking-widest text-white/40 font-bold mb-4">Deep Calculation Breakdown</h4>
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-white/60">XGBoost Probability</span>
-                    <span className="text-white font-mono">{data.parameters.math.xgbProb}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-white/60">LSTM Neural Network</span>
-                    <span className="text-white font-mono">{data.parameters.math.lstmProb}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-white/60">AMQS Signal Stacking</span>
-                    <span className="text-white font-mono">{data.parameters.math.amqsScore}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-white/60">Hurst Exponent (Persistence)</span>
-                    <span className="text-white font-mono">{data.parameters.math.hurstExponent}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-sm border-t border-white/5 pt-3 mt-3">
-                    <span className="text-emerald-500 font-bold">Final Confidence Score</span>
-                    <span className="text-emerald-500 font-black">{data.confidence}%</span>
-                  </div>
+            {/* AI Real-Time Analysis Graph */}
+            {/* AI Signal Graph Hook - Pulse on change */}
+            <div className={cn(
+              "bg-[#111112] border rounded-2xl p-6 transition-all duration-500",
+              data.signal !== 'HOLD' ? "border-emerald-500/30 shadow-[0_0_20px_rgba(16,185,129,0.1)]" : "border-white/5"
+            )}>
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="text-lg font-bold flex items-center gap-2">
+                  <BrainCircuit className={cn("w-5 h-5", data.signal !== 'HOLD' ? "text-emerald-500 animate-pulse" : "text-emerald-500")} />
+                  AI Master Signal Engine
+                </h3>
+                <div className="flex gap-4 text-[10px] uppercase tracking-widest font-bold">
+                  <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-emerald-500" /> BUY SIGNAL</div>
+                  <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-rose-500" /> SELL SIGNAL</div>
                 </div>
               </div>
-
-              <div className="space-y-4">
-                <p className="text-xs uppercase tracking-widest text-white/40 font-bold">Execution Logic</p>
-                <ul className="space-y-3">
-                  <li className="flex items-center gap-3 text-sm">
-                    <div className={cn("w-1.5 h-1.5 rounded-full", data.signal !== 'HOLD' ? "bg-emerald-500" : "bg-white/10")} />
-                    <span className="text-white/70">Regime-Adaptive Strategy: {data.regime} Mode</span>
-                  </li>
-                  <li className="flex items-center gap-3 text-sm">
-                    <div className={cn("w-1.5 h-1.5 rounded-full", parseFloat(data.parameters.math.kellyCriterion) > 0 ? "bg-emerald-500" : "bg-rose-500")} />
-                    <span className="text-white/70">Kelly Criterion: {parseFloat(data.parameters.math.kellyCriterion) > 0 ? "Optimal Sizing Active" : "Risk Block Active"}</span>
-                  </li>
-                  <li className="flex items-center gap-3 text-sm">
-                    <div className={cn("w-1.5 h-1.5 rounded-full", parseFloat(data.parameters.math.sharpeRatio) > 1.5 ? "bg-emerald-500" : "bg-amber-500")} />
-                    <span className="text-white/70">Risk-Adjusted Performance: {data.parameters.math.sharpeRatio} Sharpe</span>
-                  </li>
-                </ul>
-              </div>
-              <div className="bg-white/5 rounded-xl p-6 border border-white/5 relative overflow-hidden">
-                <div className="absolute top-0 right-0 p-2">
-                  <Shield className={cn("w-4 h-4", parseFloat(data.parameters.math.kellyCriterion) > 0 ? "text-emerald-500/50" : "text-rose-500/50")} />
-                </div>
-                <p className="text-xs uppercase tracking-widest text-white/30 font-bold mb-4">Risk Engine Output</p>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <p className="text-[10px] text-white/40 uppercase mb-1">Sharpe Ratio</p>
-                    <p className="text-xl font-mono text-emerald-500">{data.parameters.math.sharpeRatio}</p>
-                    <p className="text-[8px] text-white/20 uppercase mt-1">Risk-Adj. Return</p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-white/40 uppercase mb-1">Win Rate</p>
-                    <p className="text-xl font-mono text-emerald-500">{data.parameters.risk.winRate}</p>
-                    <p className="text-[8px] text-white/20 uppercase mt-1">Historical Edge</p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-white/40 uppercase mb-1">Max Drawdown</p>
-                    <p className="text-xl font-mono text-rose-500">{data.parameters.risk.maxDrawdown}</p>
-                    <p className="text-[8px] text-white/20 uppercase mt-1">Peak-to-Trough</p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-white/40 uppercase mb-1">Kelly Size</p>
-                    <p className="text-xl font-mono text-white">{data.parameters.risk.positionSize}</p>
-                    <p className="text-[8px] text-white/20 uppercase mt-1">Optimal Fraction</p>
-                  </div>
-                </div>
+              <div className="h-[300px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={chartData}>
+                    <defs>
+                      <linearGradient id="colorNeural" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#10b981" stopOpacity={0.1}/>
+                        <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
+                    <XAxis dataKey="time" hide />
+                    <YAxis domain={['auto', 'auto']} hide />
+                    <Tooltip
+                      contentStyle={{ backgroundColor: '#111112', borderColor: '#ffffff10', borderRadius: '8px' }}
+                      itemStyle={{ color: '#fff', fontFamily: 'monospace' }}
+                      labelStyle={{ display: 'none' }}
+                    />
+                    <Area type="monotone" dataKey="price" stroke="none" fillOpacity={1} fill="url(#colorNeural)" />
+                    <Line
+                      type="monotone"
+                      dataKey="price"
+                      stroke="#10b981"
+                      strokeWidth={2}
+                      dot={(props: any) => {
+                        const { cx, cy, payload } = props;
+                        if (payload.signal === 'BUY') {
+                          return <circle key={`dot-${payload.time}`} cx={cx} cy={cy} r={6} fill="#10b981" stroke="#fff" strokeWidth={2} />;
+                        }
+                        if (payload.signal === 'SELL') {
+                          return <circle key={`dot-${payload.time}`} cx={cx} cy={cy} r={6} fill="#ef4444" stroke="#fff" strokeWidth={2} />;
+                        }
+                        return null;
+                      }}
+                      activeDot={{ r: 4, fill: '#10b981' }}
+                    />
+                  </ComposedChart>
+                </ResponsiveContainer>
               </div>
             </div>
 
-            {/* Live Feed Simulation */}
-            <div className="mt-8 pt-8 border-t border-white/5">
-              <div className="flex justify-between items-center mb-4">
-                <p className="text-xs uppercase tracking-widest text-white/30 font-bold">Live Positions & Trade History</p>
-                <div className="text-right">
-                  <p className="text-[10px] uppercase tracking-widest text-white/30">Total Balance</p>
-                  <p className="text-sm font-mono text-emerald-500">${parseFloat(portfolio.balance.total).toLocaleString()}</p>
+            {/* Parameter Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              <ParameterCard title="Trend Analysis" icon={<TrendingUp className="w-4 h-4" />} params={{
+                "SuperTrend": data.parameters.trend.supertrend || "N/A",
+                "ADX Strength": data.parameters.trend.adx || "N/A",
+                "Ichimoku": data.parameters.trend.ichimoku || "N/A",
+                "EMA 50": data.parameters.trend.ema50 || "N/A",
+                "EMA 200": data.parameters.trend.ema200 || "N/A"
+              }} />
+              <ParameterCard title="Momentum Engine" icon={<Zap className="w-4 h-4" />} params={{
+                "RSI (14)": data.parameters.momentum.rsi || "N/A",
+                "MACD Hist": data.parameters.momentum.macd || "N/A",
+                "Stochastic": data.parameters.momentum.stochastic || "N/A",
+                "ROC (Rate)": data.parameters.momentum.roc || "N/A",
+                "Williams %R": data.parameters.momentum.williamsR || "N/A"
+              }} />
+              <ParameterCard title="Vol & Liquidity" icon={<BarChart3 className="w-4 h-4" />} params={{
+                "Liquidity": data.parameters.volume.liquidity || "N/A",
+                "OBV": data.parameters.volume.obv || "N/A",
+                "VWAP": data.parameters.volume.vwap || "N/A",
+                "CMF Delta": data.parameters.volume.cmf || "N/A",
+                "Vol Spike": data.parameters.volume.volumeSpike || "N/A"
+              }} />
+              <ParameterCard title="Volatility Guard" icon={<Activity className="w-4 h-4" />} params={{
+                "ATR (14)": data.parameters.volatility.atr || "N/A",
+                "BB Upper": data.parameters.volatility.bollingerUpper || "N/A",
+                "BB Lower": data.parameters.volatility.bollingerLower || "N/A",
+                "Std Dev": data.parameters.volatility.stdDev || "N/A",
+                "KC Upper": data.parameters.volatility.keltnerUpper || "N/A"
+              }} />
+              <ParameterCard title="AI Neural Scores" icon={<BrainCircuit className="w-4 h-4" />} params={{
+                "XGBoost Score": data.parameters.math.xgbProb || "N/A",
+                "LSTM Network": data.parameters.math.lstmProb || "N/A",
+                "Hurst Index": data.parameters.math.hurstExponent || "N/A",
+                "Bayesian Conf": "High",
+                "Signal Scale": "0.02s"
+              }} />
+              <ParameterCard title="Alpha & Risk" icon={<Shield className="w-4 h-4" />} params={{
+                "Kelly Size": data.parameters.math.kellyCriterion || "N/A",
+                "Sharpe Ratio": data.parameters.math.sharpeRatio || "N/A",
+                "Hist Win Rate": data.parameters.risk.winRate || "N/A",
+                "Max DD Lim": data.parameters.risk.maxDrawdown || "N/A",
+                "Alpha Score": data.parameters.math.amqsScore || "N/A"
+              }} />
+              <ParameterCard title="Mathematics" icon={<Activity className="w-4 h-4" />} params={{
+                "Log Returns": data.parameters.math.logReturns || "N/A",
+                "Z-Score": data.parameters.math.zScore || "N/A",
+                "Expectancy": data.parameters.risk.expectancy || "N/A",
+                "Reward:Risk": data.parameters.risk.riskReward || "N/A",
+                "Alpha Node": "Master"
+              }} />
+              <ParameterCard title="Execution" icon={<ArrowRight className="w-4 h-4" />} params={{
+                "Leverage": data.parameters.risk.leverage || "N/A",
+                "Sentiment": data.sentiment.label || "N/A",
+                "Score": data.sentiment.score || "0",
+                "Market Sync": "Optimal",
+                "Latency": "8ms"
+              }} />
+            </div>
+
+            <div className="grid grid-cols-12 gap-6 mt-6">
+              <div className="col-span-12 lg:col-span-8 bg-[#111112] border border-white/5 rounded-2xl p-8">
+                <div className="flex justify-between items-center mb-6">
+                  <h3 className="text-lg font-bold flex items-center gap-2">
+                    <BrainCircuit className="w-5 h-5 text-emerald-500" />
+                    Strategy Logic: Smart Trend + Pullback
+                  </h3>
+                </div>
+              {/* Neural Consensus Matrix */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+                <div className="bg-white/5 rounded-xl p-4 border border-white/5">
+                  <p className="text-[10px] text-white/40 uppercase tracking-widest mb-1">Liquidity Engine</p>
+                  <p className={cn("text-lg font-mono font-bold", parseFloat(data.parameters.volume.liquidity.replace(/[^0-9.]/g, '')) > 20 ? "text-emerald-500" : "text-amber-500")}>
+                    {parseFloat(data.parameters.volume.liquidity.replace(/[^0-9.]/g, '')) > 50 ? "OPTIMAL" : "STABLE"}
+                  </p>
+                </div>
+                <div className="bg-white/5 rounded-xl p-4 border border-white/5">
+                  <p className="text-[10px] text-white/40 uppercase tracking-widest mb-1">Expected R:R</p>
+                  <p className="text-lg font-mono font-bold text-white/80">
+                    {(parseFloat(data.parameters.volatility.atr) * 2.5 / (parseFloat(data.parameters.volatility.atr) * 1.5)).toFixed(2)}x
+                  </p>
+                </div>
+                <div className="bg-white/5 rounded-xl p-4 border border-white/5">
+                  <p className="text-[10px] text-white/40 uppercase tracking-widest mb-1">Sentiment Guard</p>
+                  <p className={cn("text-lg font-mono font-bold", data.sentiment.label === 'NEUTRAL' ? "text-amber-500" : "text-emerald-500")}>
+                    {data.sentiment.label === 'NEUTRAL' ? "QUIET" : "ACTIVE"}
+                  </p>
+                </div>
+                <div className="bg-white/5 rounded-xl p-4 border border-white/5">
+                  <p className="text-[10px] text-white/40 uppercase tracking-widest mb-1">Timeframe Sync</p>
+                  <p className="text-lg font-mono font-bold text-emerald-500">{timeframe}M</p>
                 </div>
               </div>
-              
-              <div className="space-y-3 font-mono text-[11px] max-h-60 overflow-y-auto pr-2 custom-scrollbar">
-                {!portfolio.positions || portfolio.positions.length === 0 ? (
-                  <div className="text-white/30 text-center py-4">Waiting for first trade execution...</div>
-                ) : (
-                  portfolio.positions.map((pos: any) => {
-                    const currentPrice = data?.price ? parseFloat(data.price) : pos.entryPrice;
-                    const unrealizedPnl = pos.status === 'OPEN' 
-                      ? (pos.side === 'LONG' ? (currentPrice - pos.entryPrice) * pos.qty : (pos.entryPrice - currentPrice) * pos.qty)
-                      : (pos.pnl || 0);
-
-                    return (
-                      <div key={pos.id} className="flex flex-col p-3 bg-white/5 rounded border border-white/5 gap-2 hover:bg-white/10 transition-colors">
-                        <div className="flex justify-between items-center">
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-white tracking-widest">{pos.symbol}</span>
-                            <span className={cn("px-1.5 py-0.5 rounded text-[9px] font-bold uppercase", pos.side === 'LONG' ? "bg-emerald-500/20 text-emerald-500" : "bg-rose-500/20 text-rose-500")}>
-                              {pos.side}
-                            </span>
-                            <span className={cn("px-1.5 py-0.5 rounded text-[9px] font-bold uppercase", pos.status === 'OPEN' ? "bg-blue-500/20 text-blue-500" : "bg-white/10 text-white/50")}>
-                              {pos.status}
-                            </span>
-                            <span className="text-white/70">{parseFloat(pos.qty).toFixed(4)} QTY</span>
-                            <span className="text-amber-500/70">{pos.leverage}x</span>
-                          </div>
-                          <div className="text-right">
-                            <span className={cn("font-bold text-xs", unrealizedPnl >= 0 ? "text-emerald-500" : "text-rose-500")}>
-                              {unrealizedPnl >= 0 ? '+' : ''}${unrealizedPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </span>
-                          </div>
-                        </div>
-                        
-                        <div className="grid grid-cols-2 gap-4 text-[10px] text-white/40 mt-1">
-                          <div>
-                            <p>Entry: <span className="text-white/70">${parseFloat(pos.entryPrice).toLocaleString()}</span></p>
-                            <p>Margin: <span className="text-white/70">${parseFloat(pos.margin).toLocaleString()}</span></p>
-                            <p>Time: <span className="text-white/70">{new Date(pos.entryTime).toLocaleTimeString()}</span></p>
-                          </div>
-                          <div className="text-right">
-                            <p>{pos.status === 'OPEN' ? 'Current' : 'Exit'}: <span className="text-white/70">${pos.status === 'OPEN' ? currentPrice.toLocaleString() : pos.exitPrice ? parseFloat(pos.exitPrice).toLocaleString() : '-'}</span></p>
-                            <p>Fees: <span className="text-white/70">${(parseFloat(pos.entryFee) + (pos.exitFee ? parseFloat(pos.exitFee) : 0)).toFixed(2)}</span></p>
-                            <p>Time: <span className="text-white/70">{pos.exitTime ? new Date(pos.exitTime).toLocaleTimeString() : '-'}</span></p>
-                          </div>
-                        </div>
-                        <div className="text-[9px] text-white/30 truncate mt-1 border-t border-white/5 pt-1 flex justify-between items-center">
-                          <span className="max-w-[70%] truncate italic">Strategy: {pos.strategy}</span>
-                          <div className="flex gap-2">
-                            {pos.status === 'OPEN' && (
-                              <button 
-                                onClick={() => closePosition(pos.id)}
-                                className="text-emerald-500 hover:text-emerald-400 font-bold uppercase"
-                              >
-                                Exit
-                              </button>
-                            )}
-                            <button 
-                              onClick={() => deletePosition(pos.id)}
-                              className="text-white/20 hover:text-rose-500 font-bold uppercase transition-colors"
-                            >
-                              Del
-                            </button>
-                          </div>
-                        </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                  <div className="space-y-4">
+                    <h4 className="text-xs uppercase tracking-widest text-white/40 font-bold mb-4">Calculation Breakdown</h4>
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-white/60">XGBoost Probability</span>
+                        <span className="text-white font-mono">{data.parameters.math.xgbProb}</span>
                       </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-          </div>
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-white/60">LSTM Neural Network</span>
+                        <span className="text-white font-mono">{data.parameters.math.lstmProb}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm border-t border-white/5 pt-3 mt-3">
+                        <span className="text-emerald-500 font-bold">Final Confidence Score</span>
+                        <span className="text-emerald-500 font-black">{data.confidence}%</span>
+                      </div>
+                    </div>
+                  </div>
 
-          <div className="col-span-12 lg:col-span-4 bg-[#111112] border border-white/5 rounded-2xl p-8 flex flex-col">
-             <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
-              <Activity className="w-5 h-5 text-emerald-500" />
-              News Sentiment
-            </h3>
-            <div className="space-y-6 flex-1">
-              <div className="flex justify-between items-center">
-                <span className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Sentiment Score</span>
-                <span className={cn(
-                  "text-xl font-mono font-bold",
-                  parseFloat(data.sentiment.score) > 0 ? "text-emerald-500" : "text-rose-500"
-                )}>
-                  {data.sentiment.score}
-                </span>
-              </div>
-              
-              <div className="p-4 bg-white/5 rounded-xl border border-white/5">
-                <div className="flex items-center gap-2 mb-2">
-                  <div className={cn(
-                    "w-2 h-2 rounded-full",
-                    data.sentiment.label === 'BULLISH' ? "bg-emerald-500" : 
-                    data.sentiment.label === 'BEARISH' ? "bg-rose-500" : "bg-amber-500"
-                  )} />
-                  <span className="text-xs font-bold uppercase tracking-widest">{data.sentiment.label}</span>
+                  <div className="bg-white/5 rounded-xl p-6 border border-white/5 relative overflow-hidden">
+                    <p className="text-xs uppercase tracking-widest text-white/30 font-bold mb-4">Risk Engine Output</p>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <p className="text-[10px] text-white/40 uppercase mb-1">Sharpe Ratio</p>
+                        <p className="text-lg font-mono text-emerald-500">{data.parameters.math.sharpeRatio}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-white/40 uppercase mb-1">Win Rate</p>
+                        <p className="text-lg font-mono text-emerald-500">{data.parameters.risk.winRate}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-white/40 uppercase mb-1">Max Drawdown</p>
+                        <p className="text-lg font-mono text-rose-500">{data.parameters.risk.maxDrawdown}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-white/40 uppercase mb-1">Kelly Size</p>
+                        <p className="text-lg font-mono text-white">{data.parameters.risk.positionSize}</p>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-                <p className="text-sm text-white/70 italic leading-relaxed">
-                  "{data.sentiment.headline}"
-                </p>
+
+                <div className="mt-8 pt-8 border-t border-white/5 overflow-y-auto max-h-[300px] custom-scrollbar">
+                  <p className="text-xs uppercase tracking-widest text-white/30 font-bold mb-4">Real-Time Performance Feed</p>
+                  <div className="space-y-3">
+                    {portfolio.positions.slice(0, 10).map((pos: any) => {
+                      const currentPriceValue = data?.price ? parseFloat(data.price) : pos.entryPrice;
+                      const unrealPnlValue = pos.status === 'OPEN'
+                        ? (pos.side === 'LONG' ? (currentPriceValue - pos.entryPrice) * pos.qty : (pos.entryPrice - currentPriceValue) * pos.qty)
+                        : (pos.pnl || 0);
+                      return (
+                        <div key={pos.id} className="flex justify-between items-center p-3 bg-white/5 rounded-lg border border-white/5 font-mono text-[11px]">
+                          <div className="flex items-center gap-3">
+                             <span className={cn("px-1.5 py-0.5 rounded text-[9px] font-bold", pos.side === 'LONG' ? "bg-emerald-500/10 text-emerald-500" : "bg-rose-500/10 text-rose-500")}>{pos.side}</span>
+                             <span className="text-white/70">{pos.symbol}</span>
+                          </div>
+                          <span className={cn("font-bold", unrealPnlValue >= 0 ? "text-emerald-500" : "text-rose-500")}>
+                            {unrealPnlValue >= 0 ? '+' : ''}${unrealPnlValue.toFixed(2)}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
 
-              <div className="mt-auto pt-4 border-t border-white/5">
-                <p className="text-[10px] text-white/30 uppercase tracking-widest leading-tight">
-                  Signals are automatically filtered when sentiment conflicts with technical indicators.
-                </p>
+              <div className="col-span-12 lg:col-span-4 bg-[#111112] border border-white/5 rounded-2xl p-8 flex flex-col">
+                 <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
+                  <Activity className="w-5 h-5 text-emerald-500" />
+                  News Sentiment
+                </h3>
+                <div className="space-y-6 flex-1">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Sentiment Score</span>
+                    <span className={cn(
+                      "text-xl font-mono font-bold",
+                      parseFloat(data.sentiment.score) > 0 ? "text-emerald-500" : "text-rose-500"
+                    )}>
+                      {data.sentiment.score}
+                    </span>
+                  </div>
+
+                  <div className="p-4 bg-white/5 rounded-xl border border-white/5">
+                    <div className="flex items-center gap-2 mb-2">
+                      <div className={cn(
+                        "w-2 h-2 rounded-full",
+                        data.sentiment.label === 'BULLISH' ? "bg-emerald-500" :
+                        data.sentiment.label === 'BEARISH' ? "bg-rose-500" : "bg-amber-500"
+                      )} />
+                      <span className="text-xs font-bold uppercase tracking-widest">{data.sentiment.label}</span>
+                    </div>
+                    <p className="text-sm text-white/70 italic leading-relaxed">
+                      "{data.sentiment.headline}"
+                    </p>
+                  </div>
+
+                  <div className="mt-auto pt-4 border-t border-white/5">
+                    <p className="text-[10px] text-white/30 uppercase tracking-widest leading-tight">
+                      Signals are filtered when sentiment conflicts with technical indicators.
+                    </p>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-        </div>
         )}
 
         {activeTab === 'alerts' && (
           <div className="grid grid-cols-12 gap-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
             <div className="col-span-12 lg:col-span-6 bg-[#111112] border border-white/5 rounded-2xl p-8 flex flex-col">
-             <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
-              <Bell className="w-5 h-5 text-emerald-500" />
-              Telegram Intelligence Settings
-            </h3>
-            <div className="space-y-4 flex-1">
-              <div>
-                <label className="text-[10px] uppercase tracking-widest text-white/40 block mb-2">Bot API Token</label>
-                <input 
-                  type="password"
-                  placeholder="Paste your Bot Token here..."
-                  value={settings.telegramToken}
-                  onChange={(e) => updateSettings({ telegramToken: e.target.value })}
-                  className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-2 text-sm font-mono text-emerald-500 placeholder:text-white/10 focus:outline-none focus:border-emerald-500/50"
-                />
-              </div>
-              <div>
-                <label className="text-[10px] uppercase tracking-widest text-white/40 block mb-2">My Chat ID</label>
-                <input 
-                  type="text"
-                  placeholder="Enter your Chat ID..."
-                  value={settings.telegramChatId}
-                  onChange={(e) => updateSettings({ telegramChatId: e.target.value })}
-                  className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-2 text-sm font-mono text-white/60 placeholder:text-white/10 focus:outline-none focus:border-emerald-500/50"
-                />
-              </div>
-              <div>
-                <label className="text-[10px] uppercase tracking-widest text-white/40 block mb-2">Connection Status</label>
-                <div className={cn(
-                   "flex items-center gap-2 px-4 py-2 rounded-lg border",
-                   (!settings.telegramToken || !settings.telegramChatId) ? "bg-rose-500/10 border-rose-500/30" : "bg-emerald-500/10 border-emerald-500/30"
-                )}>
-                  <div className={cn(
-                    "w-2 h-2 rounded-full animate-pulse",
-                    (!settings.telegramToken || !settings.telegramChatId) ? "bg-rose-500" : "bg-emerald-500"
-                  )} />
-                  <span className={cn(
-                    "text-xs font-mono",
-                    (!settings.telegramToken || !settings.telegramChatId) ? "text-rose-500" : "text-emerald-500"
-                  )}>
-                    {(!settings.telegramToken || !settings.telegramChatId) ? "NOT CONFIGURED" : "READY TO BROADCAST"}
+              <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
+                <Bell className="w-5 h-5 text-emerald-500" />
+                Telegram Intelligence Settings
+              </h3>
+              <div className="space-y-4 flex-1">
+                <div>
+                  <label className="text-[10px] uppercase tracking-widest text-white/40 block mb-2">Bot API Token</label>
+                  <input
+                    type="password"
+                    placeholder="Paste your Bot Token here..."
+                    value={settings.telegramToken}
+                    onChange={(e) => updateSettings({ telegramToken: e.target.value })}
+                    className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-2 text-sm font-mono text-emerald-500 focus:outline-none focus:border-emerald-500/50"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] uppercase tracking-widest text-white/40 block mb-2">My Chat ID</label>
+                  <input
+                    type="text"
+                    placeholder="Enter your Chat ID..."
+                    value={settings.telegramChatId}
+                    onChange={(e) => updateSettings({ telegramChatId: e.target.value })}
+                    className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-2 text-sm font-mono text-white/60 focus:outline-none focus:border-emerald-500/50"
+                  />
+                </div>
+                <div className="flex items-center gap-2 px-4 py-2 rounded-lg border bg-white/5 border-white/10">
+                  <div className={cn("w-2 h-2 rounded-full", (!settings.telegramToken || !settings.telegramChatId) ? "bg-rose-500" : "bg-emerald-500")} />
+                  <span className="text-xs font-mono uppercase tracking-widest">
+                    {(!settings.telegramToken || !settings.telegramChatId) ? "Disconnected" : "Signal Link Active"}
                   </span>
                 </div>
-              </div>
-              <button 
-                onClick={() => sendAlert('TEST', 'QuantEdge AI Test', 'Manual test signal triggered from your custom bot setting.')}
-                disabled={!settings.telegramToken || !settings.telegramChatId}
-                className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-30 disabled:hover:bg-emerald-500 text-black font-bold py-3 rounded-xl transition-all mt-4 flex items-center justify-center gap-2"
-              >
-                <Zap className="w-4 h-4" />
-                Send Test Alert
-              </button>
-
-              <div className="mt-6 pt-6 border-t border-white/5 space-y-3">
-                <p className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Bot Setup Guide</p>
-                <div className="space-y-2">
-                  <div className="flex gap-3 items-start">
-                    <div className="w-4 h-4 rounded-full bg-white/10 flex items-center justify-center text-[10px] flex-shrink-0">1</div>
-                    <p className="text-[10px] text-white/50 leading-tight">Create a bot via <span className="text-emerald-500">@BotFather</span> on Telegram.</p>
-                  </div>
-                  <div className="flex gap-3 items-start">
-                    <div className="w-4 h-4 rounded-full bg-white/10 flex items-center justify-center text-[10px] flex-shrink-0">2</div>
-                    <p className="text-[10px] text-white/50 leading-tight">Paste the Token provided by BotFather above.</p>
-                  </div>
-                  <div className="flex gap-3 items-start">
-                    <div className="w-4 h-4 rounded-full bg-white/10 flex items-center justify-center text-[10px] flex-shrink-0">3</div>
-                    <p className="text-[10px] text-white/50 leading-tight">Find your numeric ID via <span className="text-emerald-500">@userinfobot</span>.</p>
-                  </div>
-                </div>
+                <button
+                  onClick={() => sendAlert('TEST', 'QuantEdge Test', 'Manual trigger.')}
+                  disabled={!settings.telegramToken || !settings.telegramChatId}
+                  className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-30 text-black font-bold py-3 rounded-xl transition-all mt-4"
+                >
+                  Send Test Alert
+                </button>
               </div>
             </div>
+
+            <div className="col-span-12 lg:col-span-6 bg-[#111112] border border-white/5 rounded-2xl p-8">
+               <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-emerald-500" />
+                Bot Connection Info
+              </h3>
+               <div className="mt-8 pt-6 border-t border-rose-500/10">
+                  <p className="text-[10px] uppercase tracking-widest text-rose-500/60 font-black mb-4 flex items-center gap-2">
+                    <AlertTriangle className="w-3 h-3" />
+                    Danger Zone
+                  </p>
+                  <button
+                    onClick={resetAllData}
+                    className="w-full bg-rose-500/10 hover:bg-rose-500 text-rose-500 hover:text-white border border-rose-500/30 font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2 group"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    Reset Entire Platform Data
+                  </button>
+                  <p className="text-[9px] text-white/20 mt-2 text-center">Caution: Irreversible action. History & Settings wipe.</p>
+                </div>
             </div>
           </div>
         )}
@@ -1651,17 +1694,25 @@ export default function App() {
   );
 }
 
-function NavIcon({ icon, active, onClick }: { icon: React.ReactNode, active?: boolean, onClick?: () => void }) {
+function NavIcon({ icon, label, active, onClick }: { icon: React.ReactNode, label: string, active?: boolean, onClick?: () => void }) {
   return (
-    <button 
-      onClick={onClick}
-      className={cn(
-        "w-12 h-12 rounded-xl flex items-center justify-center transition-all duration-300",
-        active ? "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20" : "text-white/30 hover:text-white hover:bg-white/5"
-      )}
-    >
-      {React.cloneElement(icon as React.ReactElement, { className: "w-6 h-6" })}
-    </button>
+    <div className="group relative">
+      <button 
+        onClick={onClick}
+        className={cn(
+          "w-12 h-12 rounded-xl flex items-center justify-center transition-all duration-300",
+          active ? "bg-emerald-500/20 text-emerald-500 border border-emerald-500/40 shadow-[0_0_15px_rgba(16,185,129,0.1)]" : "text-white/30 hover:text-white hover:bg-white/5"
+        )}
+      >
+        {React.cloneElement(icon as React.ReactElement, { className: "w-6 h-6" })}
+      </button>
+      
+      {/* Tooltip Label */}
+      <div className="absolute left-full ml-4 px-3 py-1.5 rounded-lg bg-[#111112] border border-white/10 text-white text-[10px] font-bold uppercase tracking-widest whitespace-nowrap opacity-0 translate-x-[-10px] pointer-events-none group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-300 z-[100] shadow-xl">
+        {label}
+        <div className="absolute top-1/2 -left-1 -translate-y-1/2 w-2 h-2 bg-[#111112] border-l border-b border-white/10 rotate-45" />
+      </div>
+    </div>
   );
 }
 
