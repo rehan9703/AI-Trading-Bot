@@ -17,6 +17,8 @@ import {
   ArrowRight,
   AlertTriangle,
   ShieldAlert,
+  ShieldCheck,
+  Wallet,
   FileText
 } from 'lucide-react';
 import { 
@@ -605,23 +607,38 @@ export default function App() {
             <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/5 blur-3xl rounded-full -mr-16 -mt-16" />
             
             <div>
-              <div className="flex justify-between items-start mb-8">
-                <div className="text-xs uppercase tracking-widest text-white/40 font-semibold flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                  Live AI Signal Engine
+              <div className="flex justify-between items-start mb-6">
+                <div className="flex flex-col gap-1">
+                  <div className="text-[10px] uppercase tracking-widest text-white/40 font-black flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_8px_#10b981]" />
+                    AI Neural Signal Node
+                  </div>
+                  <div className="text-[9px] text-emerald-500/50 font-mono">LATENCY: 8ms | PKT: 100%</div>
                 </div>
                 <Zap className={cn("w-5 h-5", data.signal === 'BUY' ? "text-emerald-500" : data.signal === 'SELL' ? "text-rose-500" : "text-amber-500")} />
               </div>
               
-              <div className="mb-2">
+              <div className="mb-2 relative">
+                <div className="absolute -left-4 top-0 w-1 h-full bg-emerald-500/20 rounded-full" />
                 <h2 className={cn(
-                  "text-7xl font-black tracking-tighter italic",
-                  data.signal === 'BUY' ? "text-emerald-500" : data.signal === 'SELL' ? "text-rose-500" : "text-amber-500"
+                  "text-8xl font-black tracking-tighter italic leading-none",
+                  data.signal === 'BUY' ? "text-emerald-500 drop-shadow-[0_0_15px_rgba(16,185,129,0.3)]" : data.signal === 'SELL' ? "text-rose-500 drop-shadow-[0_0_15px_rgba(239,68,68,0.3)]" : "text-amber-500"
                 )}>
                   {data.signal}
                 </h2>
-                <p className="text-sm text-white/60 mt-2">Confidence Score: <span className="text-white font-mono">{data.confidence}%</span></p>
-                <p className="text-[10px] text-white/40 mt-4 uppercase tracking-widest font-bold border-t border-white/5 pt-4">
+                <div className="flex items-center gap-4 mt-4">
+                  <div>
+                    <p className="text-[10px] text-white/40 uppercase font-bold mb-1">Conf. Probability</p>
+                    <p className="text-xl font-black text-white font-mono">{data.confidence}%</p>
+                  </div>
+                  <div className="w-px h-8 bg-white/10" />
+                  <div>
+                    <p className="text-[10px] text-white/40 uppercase font-bold mb-1">Profit Projection</p>
+                    <p className="text-xl font-black text-emerald-500 font-mono">+{((data.confidence / 100) * 2.5).toFixed(2)}%</p>
+                  </div>
+                </div>
+                <p className="text-[10px] text-white/40 mt-6 uppercase tracking-[0.2em] font-black border-t border-white/5 pt-4 flex items-center gap-2">
+                  <ShieldCheck className="w-3 h-3 text-emerald-500" />
                   {data.strategyNote}
                 </p>
               </div>
